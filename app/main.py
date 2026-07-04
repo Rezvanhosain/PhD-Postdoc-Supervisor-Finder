@@ -610,8 +610,28 @@ def index() -> None:
 def main() -> None:
     import os
     log.info("Starting PhD & Postdoc Supervisor Finder")
+
+    # Hard logging around the websocket lifecycle so any future "Connection
+    # lost" is diagnosable from the log file instead of guesswork.
+    @ng_app.on_connect
+    def _on_connect(client) -> None:
+        log.info("client connected (websocket up): %s", getattr(client, "id", "?"))
+
+    @ng_app.on_disconnect
+    def _on_disconnect(client) -> None:
+        log.info("client disconnected: %s", getattr(client, "id", "?"))
+
+    @ng_app.on_exception
+    def _on_exception(exc: Exception) -> None:
+        log.exception("unhandled app exception: %s", exc)
+
+    @ng_app.on_startup
+    def _on_startup() -> None:
+        log.info("NiceGUI startup complete; server ready for connections")
+
     # Desktop users get the browser opened automatically; PPSF_NO_SHOW=1 keeps
-    # headless/CI runs from trying to spawn one.
+    # headless/CI runs (and the desktop launcher, which opens the browser
+    # itself only after confirming HTTP readiness) from spawning a racy tab.
     show = os.environ.get("PPSF_NO_SHOW") != "1"
     ui.run(title="PhD & Postdoc Supervisor Finder", host="127.0.0.1", port=8765,
            reload=False, show=show, favicon="🎓")
