@@ -1,5 +1,7 @@
 # 🎓 PhD & Postdoc Supervisor Finder
 
+[![CI](https://github.com/Rezvanhosain/PhD-Postdoc-Supervisor-Finder/actions/workflows/ci.yml/badge.svg)](https://github.com/Rezvanhosain/PhD-Postdoc-Supervisor-Finder/actions/workflows/ci.yml)
+
 A **local desktop app** that helps you find open PhD/postdoc positions and suitable academic
 supervisors — especially in business, accounting, finance, management, leadership, education,
 social sciences, NGO/nonprofit studies, public policy, and development studies — then helps you
