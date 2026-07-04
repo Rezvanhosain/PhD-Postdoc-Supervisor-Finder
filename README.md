@@ -47,6 +47,26 @@ Optional keys (Settings page or `.env` — see [`.env.example`](.env.example)):
 - **Google / Microsoft OAuth client** → send email directly from the app
 - **Semantic Scholar key** → higher API rate limits
 
+## What it does NOT do (known limitations)
+
+- It does **not** auto-apply to positions or auto-send emails — you review and send each one.
+- It does **not** bypass logins, paywalls, or CAPTCHAs, and it will not scrape a site whose
+  robots.txt disallows it (those are logged under *Logs / Manual Review* instead).
+- It does **not** invent citations, DOIs, or supervisor publications (see below).
+- Job-board scrapers are best-effort — sites change their HTML and some block bots, so
+  position search can return 0 results; supervisor search (OpenAlex/Semantic Scholar APIs) is
+  the reliable path.
+- The built-in PDF font is Latin-1; for non-Latin scripts use the DOCX output.
+- Supervisor email addresses are rarely public — the app flags this rather than guessing.
+
+## Sending email via Gmail / Outlook
+
+Sending is optional. Create a free OAuth client once (Google Cloud Console for Gmail,
+Entra/Azure for Outlook), paste the Client ID/Secret into **Settings**, then click *Connect*.
+Gmail uses the `gmail.send` scope only and Outlook uses `Mail.Send` only — the app can send
+but cannot read your mailbox. Step-by-step setup is in [docs/SECURITY.md](docs/SECURITY.md).
+Tokens are stored in your OS keychain (encrypted-file fallback) and never printed to logs.
+
 ## Anti-hallucination guarantees
 
 - References come **only** from OpenAlex / Semantic Scholar / Crossref metadata.

@@ -53,3 +53,29 @@ def test_audit_table_marks_unverified():
     table = audit_table([REF, {"title": "Suspicious", "verified": False}])
     assert "VERIFIED" in table
     assert "NEEDS MANUAL REVIEW" in table
+
+
+def test_proposal_bibliography_excludes_unverified_but_audit_keeps_it():
+    """Anti-hallucination: unverified references must not appear in the final
+    bibliography, but must still be recorded in the source-audit file."""
+    from docx import Document
+
+    from app.docgen.generators import generate_proposal
+
+    refs = [
+        dict(REF, title="Verified microfinance study"),
+        {"title": "Unverifiable hallucinated paper", "authors": ["X Y"],
+         "year": "2021", "doi": "", "source_api": "llm", "verified": False},
+    ]
+    result = generate_proposal({"research_areas": ["microfinance"]},
+                               "Microfinance", refs, style="APA 7")
+
+    text = "\n".join(p.text for p in Document(result["docx"]).paragraphs)
+    bibliography = text.split("References")[-1]
+    assert "Verified microfinance study" in bibliography
+    assert "Unverifiable hallucinated paper" not in bibliography
+
+    audit = open(result["audit"], encoding="utf-8").read()
+    assert "Verified microfinance study" in audit
+    assert "Unverifiable hallucinated paper" in audit
+    assert "NEEDS MANUAL REVIEW" in audit

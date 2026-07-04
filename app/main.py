@@ -608,9 +608,13 @@ def index() -> None:
 
 
 def main() -> None:
+    import os
     log.info("Starting PhD & Postdoc Supervisor Finder")
+    # Desktop users get the browser opened automatically; PPSF_NO_SHOW=1 keeps
+    # headless/CI runs from trying to spawn one.
+    show = os.environ.get("PPSF_NO_SHOW") != "1"
     ui.run(title="PhD & Postdoc Supervisor Finder", host="127.0.0.1", port=8765,
-           reload=False, show=True, favicon="🎓")
+           reload=False, show=show, favicon="🎓")
 
 
 if __name__ in {"__main__", "__mp_main__"}:
