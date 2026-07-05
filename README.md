@@ -2,11 +2,31 @@
 
 [![CI](https://github.com/Rezvanhosain/PhD-Postdoc-Supervisor-Finder/actions/workflows/ci.yml/badge.svg)](https://github.com/Rezvanhosain/PhD-Postdoc-Supervisor-Finder/actions/workflows/ci.yml)
 
-A **local desktop app** that helps you find open PhD/postdoc positions and suitable academic
-supervisors — especially in business, accounting, finance, management, leadership, education,
-social sciences, NGO/nonprofit studies, public policy, and development studies — then helps you
-generate a tailored CV, a research proposal with **verified references only**, a project
-timeline, and a professional outreach email you can send via Gmail or Outlook.
+**v2 — a Europe-only, workflow-chained** local desktop app for finding and pursuing
+supervisor-first PhDs, direct-application PhDs, and postdocs. Instead of disconnected
+tabs, v2 is a guided pipeline where each step operates only on what you selected in the
+previous one:
+
+1. **Profile** — upload CV, set research interests
+2. **Search** — Europe-only opportunities (EURAXESS, FindAPhD, Academic Positions, THE Jobs)
+   with field / keyword / country / PhD-vs-postdoc / university filters
+3. **Classify & shortlist** — every opportunity is classified into an admission path
+   (*supervisor contact mandatory · recommended · direct application · named-PI postdoc ·
+   open-call postdoc*) with confidence, evidence snippet, and source URL. Official
+   university pages override third-party portals. You then shortlist your targets.
+4. **Supervisors** — found **only at your shortlisted universities**: official
+   staff/faculty/doctoral-school pages first, plus OpenAlex authors hard-filtered to that
+   institution. No generic unrelated results.
+5. **Fit** — explainable scores for each opportunity/supervisor pair (topic similarity,
+   level, country, deadline urgency, whether outreach is required or useful)
+6. **Documents** — the *right* bundle per admission path: supervisor-first PhD (CV +
+   supervisor email + concept note), direct-application PhD (CV + statement of purpose
+   [+ proposal/optional email]), postdoc (CV + cover letter + research statement).
+   References are **verified only** (Crossref/OpenAlex) with a source-audit file.
+7. **Outreach** — semi-automatic: drafts + attachments prepared, you review and approve
+   each send (Gmail/Outlook OAuth, daily limit, full log). No blind mass mail.
+8. **Tracker** — lightweight CRM: statuses (draft → sent → replied/interview/admitted…),
+   notes, attachment history, automatic 14-day follow-up reminders.
 
 Everything runs **on your own computer**. Your CV, profile, and tokens never leave your machine
 except for the API calls you explicitly configure.
@@ -24,18 +44,13 @@ except for the API calls you explicitly configure.
 macOS/Linux: `bash scripts/install_unix.sh`, then `./run.sh` (a Linux desktop entry is created
 automatically). See [docs/USAGE.md](docs/USAGE.md).
 
-## What it does
+## How classification works (explainability)
 
-| Section | What happens |
-|---|---|
-| Upload CV | PDF/DOCX parsing → editable profile (name, education, publications, skills…) |
-| Research Interests | The keywords that drive search & matching |
-| Search Open Positions | EURAXESS, FindAPhD, Academic Positions, THE Jobs (polite scraping: robots.txt, rate limits, caching) |
-| Find Supervisors | OpenAlex + Semantic Scholar APIs (free, no key needed) |
-| Match Results | Explainable scores: TF-IDF similarity (+optional embeddings), country/level fit, deadline urgency, with "why" and "risks" |
-| Generate Documents | ATS-friendly CV (DOCX+PDF), research proposal with **Crossref-verified references + source audit file**, 3/4-year PhD & 2-year postdoc timelines, outreach email drafts |
-| Email Outreach | Manual review required, daily send limit, Gmail/Outlook OAuth, full send log |
-| Logs / Manual Review | Failed scrapes, unverifiable references, low-confidence data |
+For every opportunity the app stores: the admission-path **label**, a **confidence**,
+the exact **evidence text** that triggered it, the **source URL**, and whether that
+source is **official or third-party**. When an official page and a portal disagree, the
+official page wins. Low-confidence classifications are flagged in *Logs / Manual Review*
+and can be corrected by hand (edit university/country/deadline directly in Step 3).
 
 ## Works without any API keys (limited mode)
 

@@ -66,11 +66,63 @@ CREATE TABLE IF NOT EXISTS citations (
 );
 CREATE TABLE IF NOT EXISTS error_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    category TEXT,           -- scrape|api|reference|email|docgen|cv_parse|app
+    category TEXT,           -- scrape|api|reference|email|docgen|cv_parse|app|classify|supervisor
     message TEXT, detail TEXT, needs_review INTEGER DEFAULT 0,
     resolved INTEGER DEFAULT 0, created_at TEXT
 );
+CREATE TABLE IF NOT EXISTS fit_scores (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    position_id INTEGER NOT NULL,
+    supervisor_id INTEGER DEFAULT 0,      -- 0 = opportunity-only fit
+    score REAL,
+    recommendation TEXT,                  -- strong|moderate|weak|avoid
+    outreach_useful INTEGER DEFAULT 0,
+    reasons TEXT,                         -- JSON: why, risks, components
+    created_at TEXT,
+    UNIQUE(position_id, supervisor_id)
+);
+CREATE TABLE IF NOT EXISTS applications (   -- lightweight tracker / CRM
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    position_id INTEGER DEFAULT 0,
+    supervisor_id INTEGER DEFAULT 0,
+    country TEXT DEFAULT '', university TEXT DEFAULT '',
+    program TEXT DEFAULT '', faculty TEXT DEFAULT '',
+    classification TEXT DEFAULT '',
+    status TEXT DEFAULT 'draft',  -- draft|ready|sent|reminder_due|replied|no_response|interview|rejected|admitted|archived
+    sent_at TEXT DEFAULT '', follow_up_due TEXT DEFAULT '',
+    last_activity TEXT DEFAULT '', notes TEXT DEFAULT '',
+    attachments TEXT DEFAULT '[]',        -- JSON list of document paths/ids
+    created_at TEXT,
+    UNIQUE(position_id, supervisor_id)
+);
 """
+
+# v2 column additions to v1 tables (applied idempotently at startup)
+MIGRATIONS: dict[str, list[tuple[str, str]]] = {
+    "positions": [
+        ("kind", "TEXT DEFAULT ''"),                    # phd|postdoc
+        ("field", "TEXT DEFAULT ''"),
+        ("funding", "TEXT DEFAULT ''"),
+        ("official_url", "TEXT DEFAULT ''"),
+        ("shortlisted", "INTEGER DEFAULT 0"),
+        ("classification", "TEXT DEFAULT ''"),
+        ("class_confidence", "REAL DEFAULT 0"),
+        ("class_evidence", "TEXT DEFAULT ''"),
+        ("class_source_url", "TEXT DEFAULT ''"),
+        ("class_source_official", "INTEGER DEFAULT 0"),
+    ],
+    "supervisors": [
+        ("title", "TEXT DEFAULT ''"),
+        ("faculty", "TEXT DEFAULT ''"),
+        ("source_type", "TEXT DEFAULT 'unofficial'"),   # official|unofficial
+        ("position_id", "INTEGER DEFAULT 0"),           # opportunity that triggered discovery
+    ],
+    "email_log": [
+        ("attachments", "TEXT DEFAULT '[]'"),           # JSON list of document paths
+        ("position_id", "INTEGER DEFAULT 0"),
+        ("supervisor_id", "INTEGER DEFAULT 0"),
+    ],
+}
 
 
 def now() -> str:
@@ -91,6 +143,11 @@ def conn() -> Iterator[sqlite3.Connection]:
 def init_db() -> None:
     with conn() as c:
         c.executescript(SCHEMA)
+        for table, cols in MIGRATIONS.items():
+            existing = {r["name"] for r in c.execute(f"PRAGMA table_info({table})")}
+            for name, decl in cols:
+                if name not in existing:
+                    c.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
 
 
 # ---- kv ----

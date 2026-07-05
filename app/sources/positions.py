@@ -12,14 +12,29 @@ from typing import Callable
 from bs4 import BeautifulSoup
 
 from app.db import insert, log_error, now
+from app.europe import detect_country, is_europe, to_code
 from app.sources.http import get
 
+
+def _derive_kind(p: dict) -> str:
+    text = f"{p.get('title','')} {p.get('description','')}".lower()
+    if "postdoc" in text or "post-doc" in text or "postdoctoral" in text:
+        return "postdoc"
+    if "phd" in text or "doctoral" in text or "doctorate" in text:
+        return "phd"
+    return ""
+
+
 def _save(p: dict) -> int:
+    country = p.get("country") or detect_country(
+        f"{p.get('title','')} {p.get('description','')}")
     return insert("positions", title=p.get("title", ""), university=p.get("university", ""),
-                  department=p.get("department", ""), country=p.get("country", ""),
+                  department=p.get("department", ""), country=country,
                   deadline=p.get("deadline", ""), eligibility=p.get("eligibility", ""),
                   description=p.get("description", "")[:3000], source=p["source"],
-                  source_url=p["source_url"], date_accessed=now())
+                  source_url=p["source_url"], date_accessed=now(),
+                  kind=p.get("kind") or _derive_kind(p),
+                  funding=p.get("funding", ""), field=p.get("field", ""))
 
 
 def search_euraxess(keywords: str, limit: int = 25) -> list[dict]:
@@ -137,18 +152,54 @@ SOURCES: dict[str, Callable[[str, int], list[dict]]] = {
 }
 
 
-def search_all(keywords: str, sources: list[str] | None = None) -> list[dict]:
-    """Run selected sources sequentially (politeness > speed), save & return."""
+def _passes(p: dict, filters: dict) -> bool:
+    """Post-scrape filtering: Europe-only always; then user filters."""
+    text = f"{p.get('title','')} {p.get('university','')} {p.get('description','')}".lower()
+    country = p.get("country") or detect_country(text)
+    if country and not is_europe(country):
+        return False
+    want_cc = to_code(filters.get("country") or "")
+    if want_cc and country and to_code(country) != want_cc:
+        return False
+    if want_cc and not country:
+        # unknown country: keep only if the country name appears in the text
+        from app.europe import country_name
+        if country_name(want_cc).lower() not in text:
+            return False
+    kind = filters.get("kind") or ""
+    if kind and (p.get("kind") or _derive_kind(p)) not in ("", kind):
+        return False
+    uni = (filters.get("university") or "").strip().lower()
+    if uni and uni not in text:
+        return False
+    field = (filters.get("field") or "").strip().lower()
+    if field and not any(w in text for w in field.split()):
+        return False
+    return True
+
+
+def search_all(keywords: str, sources: list[str] | None = None,
+               filters: dict | None = None) -> list[dict]:
+    """Run selected sources sequentially (politeness > speed), filter to
+    Europe + user filters, save & return."""
+    filters = filters or {}
+    q = keywords
+    if filters.get("field"):
+        q = f"{keywords} {filters['field']}".strip()
+    if filters.get("country"):
+        from app.europe import country_name
+        q = f"{q} {country_name(to_code(filters['country']))}".strip()
     all_results = []
     for name, fn in SOURCES.items():
         if sources and name not in sources:
             continue
         try:
-            found = fn(keywords, 25)
+            found = fn(q, 25)
         except Exception as e:
             log_error("scrape", f"{name} search failed: {e}", needs_review=True)
             found = []
-        for p in found:
+        kept = [p for p in found if _passes(p, filters)]
+        for p in kept:
             _save(p)
-        all_results.extend(found)
+        all_results.extend(kept)
     return all_results
