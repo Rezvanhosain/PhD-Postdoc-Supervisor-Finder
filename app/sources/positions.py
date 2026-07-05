@@ -250,25 +250,32 @@ def search_all(keywords: str, sources: list[str] | None = None,
     """Run selected sources sequentially (politeness > speed), filter to
     Europe + user filters, save & return.
 
-    The query text sent to each source is deliberately kept to
-    keywords+field only — country is NOT appended to the full-text query.
-    EURAXESS's search facet ANDs every word in the query, so a query like
-    "business management Hungary" requires all three words to co-occur in
-    one listing and silently under-returns even when matching Hungarian
-    positions exist. Country is instead enforced purely by the _passes()
-    post-filter below, against the structured country field each scraper
-    now extracts."""
+    Query strategy (verified against live EURAXESS behaviour): the search
+    facet does relevance ranking, NOT strict AND — a phrase like
+    "leadership social sciences" returns a full page of diverse results
+    rather than only exact all-word matches, and searching a country name
+    alone returns overwhelmingly that country's listings (e.g. "Finland" ->
+    ~28/30 Finland, "Germany" -> ~17/30 Germany). So to actually surface a
+    narrow country+field scenario we run several real queries and merge:
+      1. keywords (+field),
+      2. the country name alone (strong per-country recall),
+      3. country + first keyword (co-occurrence boost),
+      4. first keyword alone (broad recall for >2-word phrases).
+    All are deduped by URL, then the structured country/field is enforced
+    by _passes() so precision is not lost."""
     filters = filters or {}
     q = keywords
     if filters.get("field") and filters["field"].lower() not in keywords.lower():
         q = f"{keywords} {filters['field']}".strip()
-    # A 3+ word full-text query ANDs every word on EURAXESS's search facet,
-    # so a specific phrase like "leadership social sciences" can under-return
-    # even when relevant listings exist. Queries beyond 2 words fall back to
-    # additionally searching just the first significant word and merging —
-    # broader recall, still real queries against the same source.
     queries = [q]
     words = q.split()
+    country = (filters.get("country") or "").strip()
+    if country:
+        # country name alone gives the strongest per-country recall; the
+        # post-filter still enforces the exact country, so this only helps.
+        queries.append(country)
+        if words:
+            queries.append(f"{country} {words[0]}")
     if len(words) > 2:
         queries.append(words[0])
     all_results = []
