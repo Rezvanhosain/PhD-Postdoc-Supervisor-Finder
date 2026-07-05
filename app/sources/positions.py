@@ -1,12 +1,15 @@
 """Open-position sources.
 
-EURAXESS is the primary implemented source (public EU portal, robots-checked,
-rate-limited, cached). FindAPhD, Academic Positions and THE Jobs are supported
-via best-effort HTML parsers behind the same politeness layer — their markup
-changes often, so failures are logged to Manual Review rather than crashing.
-Every stored position keeps its source URL and access date."""
+EURAXESS is the only source with a working, maintained parser — a public EU
+portal with stable structured markup (robots-checked, rate-limited, cached).
+FindAPhD and Academic Positions block scraping (HTTP 403) and are disabled
+rather than pretending to work. THE Jobs still responds but its markup gives
+no structured university/country/deadline fields, so it is kept as a
+degraded, best-effort supplementary source. Every stored position keeps its
+source URL and access date."""
 from __future__ import annotations
 
+import re
 from typing import Callable
 
 from bs4 import BeautifulSoup
@@ -37,29 +40,99 @@ def _save(p: dict) -> int:
                   funding=p.get("funding", ""), field=p.get("field", ""))
 
 
-def search_euraxess(keywords: str, limit: int = 25) -> list[dict]:
-    """EURAXESS job search (https://euraxess.ec.europa.eu)."""
-    url = "https://euraxess.ec.europa.eu/jobs/search"
-    html = get(url, params={"keywords": keywords}, check_robots=True)
-    if not html:
-        return []
+_DEADLINE_RX = re.compile(r"Application Deadline:\s*\|?\s*([^|]+)")
+
+
+def _euraxess_kind(title: str, profile_text: str) -> str:
+    """R1 (First Stage Researcher, up to PhD) -> phd; R2-R4 -> postdoc,
+    falling back to keyword detection in the title when the profile is absent
+    or ambiguous (a listing can carry both tags)."""
+    kind = _derive_kind({"title": title})
+    if kind:
+        return kind
+    if "R1" in profile_text:
+        return "phd"
+    if any(r in profile_text for r in ("R2", "R3", "R4")):
+        return "postdoc"
+    return ""
+
+
+def _parse_euraxess_page(html: str) -> list[dict]:
     soup = BeautifulSoup(html, "lxml")
     results = []
-    for art in soup.select("article, div.ecl-content-item, li.search-result")[:limit]:
-        a = art.find("a", href=True)
-        if not a or not a.get_text(strip=True):
+    for art in soup.select("article.ecl-content-item"):
+        title_a = art.select_one("h3.ecl-content-block__title a") or art.select_one("h3 a")
+        if not title_a or not title_a.get_text(strip=True):
             continue
-        href = a["href"].strip()
+        href = title_a["href"].strip()
         if href.startswith("/"):
             href = "https://euraxess.ec.europa.eu" + href
-        text = art.get_text(" ", strip=True)
+
+        university, country = "", ""
+        loc = art.select_one(".id-Work-Locations .ecl-text-standard")
+        if loc:
+            parts = [p.strip() for p in loc.get_text(" ", strip=True).split(",") if p.strip()]
+            # ["Number of offers: N", country, organisation, city?]
+            if len(parts) >= 2:
+                country = parts[1]
+            if len(parts) >= 3:
+                university = parts[2]
+
+        profile_el = art.select_one(".id-Researcher-Profile .ecl-text-standard")
+        profile_text = profile_el.get_text(" ", strip=True) if profile_el else ""
+
+        full_text = art.get_text(" | ", strip=True)
+        m = _DEADLINE_RX.search(full_text)
+        deadline = m.group(1).strip() if m else ""
+
+        desc_el = art.select_one(".ecl-content-block__description")
+        description = desc_el.get_text(" ", strip=True) if desc_el else art.get_text(" ", strip=True)
+
         results.append({
-            "title": a.get_text(strip=True),
-            "university": "", "department": "", "country": "",
-            "deadline": "", "eligibility": "",
-            "description": text[:1500],
+            "title": title_a.get_text(strip=True),
+            "university": university, "department": "", "country": country,
+            "deadline": deadline, "eligibility": profile_text,
+            "description": description[:1500],
+            "kind": _euraxess_kind(title_a.get_text(strip=True), profile_text),
             "source": "euraxess", "source_url": href,
         })
+    return results
+
+
+def search_euraxess(keywords: str, limit: int = 25) -> list[dict]:
+    """EURAXESS job search (https://euraxess.ec.europa.eu).
+
+    Real listings live in <article class="ecl-content-item"> blocks with a
+    stable ECL (Europa Component Library) structure: h3 title link, a
+    "Work Locations" field of the form "Number of offers: N, <country>,
+    <organisation>[, <city>]", a "Researcher Profile" (R1-R4) field, and an
+    "Application Deadline" field. Nothing here is page chrome.
+
+    NOTE: the plain "keywords" query param is silently ignored by this
+    Drupal facets view — it always returns the default recent-jobs listing
+    (confirmed by requesting distinctive terms and getting identical
+    results). The view's actual full-text facet parameter is "f[0]",
+    verified by submitting the real HTML search form once and inspecting
+    the resulting redirect URL — not a spoofed/brittle header trick.
+
+    The site's full-text facet appears to AND every word in the query, so
+    a narrow country+field phrase can under-return even when matching
+    positions exist further down the result list. To compensate, this
+    pages through up to 3 result pages (still politeness-throttled by the
+    shared http layer) rather than only reading page 1."""
+    url = "https://euraxess.ec.europa.eu/jobs/search"
+    results: list[dict] = []
+    for page in range(3):
+        html = get(url, params={"f[0]": f"keywords:{keywords}", "page": page}, check_robots=True)
+        if not html:
+            break
+        page_results = _parse_euraxess_page(html)
+        if not page_results:
+            break
+        results.extend(page_results)
+        if len(results) >= limit:
+            break
+    results = results[:limit]
     if not results:
         log_error("scrape", "EURAXESS returned a page but no positions were parsed "
                   "(site markup may have changed).", needs_review=True)
@@ -67,76 +140,64 @@ def search_euraxess(keywords: str, limit: int = 25) -> list[dict]:
 
 
 def search_findaphd(keywords: str, limit: int = 25) -> list[dict]:
-    """FindAPhD.com listing search (best effort)."""
-    url = "https://www.findaphd.com/phds/"
-    html = get(url, params={"Keywords": keywords}, check_robots=True)
-    if not html:
-        return []
-    soup = BeautifulSoup(html, "lxml")
-    results = []
-    for card in soup.select("div.phd-result, div.resultsRow, article")[:limit]:
-        a = card.find("a", href=True)
-        if not a:
-            continue
-        href = a["href"].strip()
-        if href.startswith("/"):
-            href = "https://www.findaphd.com" + href
-        title = a.get_text(strip=True)
-        inst = card.select_one(".instLink, .phd-result__dept-inst, .institution")
-        results.append({
-            "title": title, "university": inst.get_text(strip=True) if inst else "",
-            "department": "", "country": "", "deadline": "", "eligibility": "",
-            "description": card.get_text(" ", strip=True)[:1500],
-            "source": "findaphd", "source_url": href,
-        })
-    if not results:
-        log_error("scrape", "FindAPhD parse produced no results — markup may have "
-                  "changed or robots.txt disallowed the page.", needs_review=True)
-    return results
+    """FindAPhD.com listing search — DISABLED.
+
+    findaphd.com returns HTTP 403 to this client on every request (confirmed
+    across many keyword combinations during acceptance testing). Rather than
+    scrape around that block with spoofed headers, it is disabled: it always
+    returns []. Kept as a function so it can be re-enabled if the site
+    changes its bot policy."""
+    log_error("scrape", "FindAPhD is disabled: the site returns HTTP 403 to "
+              "this client and cannot be scraped reliably.", needs_review=False)
+    return []
 
 
 def search_academic_positions(keywords: str, limit: int = 25) -> list[dict]:
-    url = "https://academicpositions.com/find-jobs"
-    html = get(url, params={"search": keywords}, check_robots=True)
-    if not html:
-        return []
-    soup = BeautifulSoup(html, "lxml")
-    results = []
-    for card in soup.select("a[href*='/ad/'], div.job-item a[href]")[:limit]:
-        href = card.get("href", "").strip()
-        if href.startswith("/"):
-            href = "https://academicpositions.com" + href
-        title = card.get_text(" ", strip=True)
-        if len(title) < 8:
-            continue
-        results.append({
-            "title": title[:200], "university": "", "department": "", "country": "",
-            "deadline": "", "eligibility": "", "description": "",
-            "source": "academic_positions", "source_url": href,
-        })
-    if not results:
-        log_error("scrape", "Academic Positions parse produced no results.", needs_review=True)
-    return results
+    """Academic Positions listing search — DISABLED for the same reason as
+    FindAPhD: consistent HTTP 403. See search_findaphd."""
+    log_error("scrape", "Academic Positions is disabled: the site returns "
+              "HTTP 403 to this client and cannot be scraped reliably.", needs_review=False)
+    return []
 
 
 def search_the_jobs(keywords: str, limit: int = 25) -> list[dict]:
+    """THE (Times Higher Education) unijobs listing search — best effort,
+    supplementary. Structured fields available: title (h3 a), university
+    (.lister__meta-item--recruiter), location (.lister__meta-item--location,
+    "city, country"), description (.lister__description). No deadline field
+    is present on the listing page (would need a per-listing fetch), so
+    deadline is left blank rather than guessed."""
     url = "https://www.timeshighereducation.com/unijobs/listings/"
     html = get(url, params={"Keywords": keywords}, check_robots=True)
     if not html:
         return []
     soup = BeautifulSoup(html, "lxml")
     results = []
-    for card in soup.select("div.lister__details, article")[:limit]:
+    for card in soup.select("div.lister__details")[:limit]:
         a = card.find("a", href=True)
-        if not a:
+        if not a or not a.get_text(strip=True):
             continue
         href = a["href"].strip()
         if href.startswith("/"):
             href = "https://www.timeshighereducation.com" + href
+
+        recruiter = card.select_one(".lister__meta-item--recruiter")
+        university = recruiter.get_text(" ", strip=True) if recruiter else ""
+
+        loc_el = card.select_one(".lister__meta-item--location")
+        country = ""
+        if loc_el:
+            loc_parts = [p.strip() for p in loc_el.get_text(" ", strip=True).split(",") if p.strip()]
+            if loc_parts:
+                country = loc_parts[-1]
+
+        desc_el = card.select_one(".lister__description")
+        description = desc_el.get_text(" ", strip=True) if desc_el else card.get_text(" ", strip=True)
+
         results.append({
-            "title": a.get_text(strip=True), "university": "", "department": "",
-            "country": "", "deadline": "", "eligibility": "",
-            "description": card.get_text(" ", strip=True)[:1500],
+            "title": a.get_text(strip=True), "university": university, "department": "",
+            "country": country, "deadline": "", "eligibility": "",
+            "description": description[:1500],
             "source": "the_jobs", "source_url": href,
         })
     if not results:
@@ -146,9 +207,15 @@ def search_the_jobs(keywords: str, limit: int = 25) -> list[dict]:
 
 SOURCES: dict[str, Callable[[str, int], list[dict]]] = {
     "EURAXESS": search_euraxess,
+    "THE Jobs": search_the_jobs,
+}
+
+# Disabled — confirmed HTTP 403 on every request during acceptance testing.
+# Present for future re-enablement, not registered in SOURCES so the UI does
+# not offer a source that cannot return results.
+DISABLED_SOURCES: dict[str, Callable[[str, int], list[dict]]] = {
     "FindAPhD": search_findaphd,
     "Academic Positions": search_academic_positions,
-    "THE Jobs": search_the_jobs,
 }
 
 
@@ -181,24 +248,47 @@ def _passes(p: dict, filters: dict) -> bool:
 def search_all(keywords: str, sources: list[str] | None = None,
                filters: dict | None = None) -> list[dict]:
     """Run selected sources sequentially (politeness > speed), filter to
-    Europe + user filters, save & return."""
+    Europe + user filters, save & return.
+
+    The query text sent to each source is deliberately kept to
+    keywords+field only — country is NOT appended to the full-text query.
+    EURAXESS's search facet ANDs every word in the query, so a query like
+    "business management Hungary" requires all three words to co-occur in
+    one listing and silently under-returns even when matching Hungarian
+    positions exist. Country is instead enforced purely by the _passes()
+    post-filter below, against the structured country field each scraper
+    now extracts."""
     filters = filters or {}
     q = keywords
-    if filters.get("field"):
+    if filters.get("field") and filters["field"].lower() not in keywords.lower():
         q = f"{keywords} {filters['field']}".strip()
-    if filters.get("country"):
-        from app.europe import country_name
-        q = f"{q} {country_name(to_code(filters['country']))}".strip()
+    # A 3+ word full-text query ANDs every word on EURAXESS's search facet,
+    # so a specific phrase like "leadership social sciences" can under-return
+    # even when relevant listings exist. Queries beyond 2 words fall back to
+    # additionally searching just the first significant word and merging —
+    # broader recall, still real queries against the same source.
+    queries = [q]
+    words = q.split()
+    if len(words) > 2:
+        queries.append(words[0])
     all_results = []
+    seen_urls: set[str] = set()
     for name, fn in SOURCES.items():
         if sources and name not in sources:
             continue
-        try:
-            found = fn(q, 25)
-        except Exception as e:
-            log_error("scrape", f"{name} search failed: {e}", needs_review=True)
-            found = []
-        kept = [p for p in found if _passes(p, filters)]
+        found: list[dict] = []
+        for query in queries:
+            try:
+                found.extend(fn(query, 40))
+            except Exception as e:
+                log_error("scrape", f"{name} search failed: {e}", needs_review=True)
+        deduped = []
+        for p in found:
+            if p["source_url"] in seen_urls:
+                continue
+            seen_urls.add(p["source_url"])
+            deduped.append(p)
+        kept = [p for p in deduped if _passes(p, filters)]
         for p in kept:
             _save(p)
         all_results.extend(kept)

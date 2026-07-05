@@ -8,8 +8,11 @@ tabs, v2 is a guided pipeline where each step operates only on what you selected
 previous one:
 
 1. **Profile** — upload CV, set research interests
-2. **Search** — Europe-only opportunities (EURAXESS, FindAPhD, Academic Positions, THE Jobs)
-   with field / keyword / country / PhD-vs-postdoc / university filters
+2. **Search** — Europe-only opportunities from EURAXESS (primary, fully structured:
+   university, country, deadline, degree type) and THE Jobs (supplementary,
+   university + country only). FindAPhD and Academic Positions block scraping
+   (HTTP 403) and are disabled rather than faked — see Known limitations.
+   Filters: field / keyword / country / PhD-vs-postdoc / university
 3. **Classify & shortlist** — every opportunity is classified into an admission path
    (*supervisor contact mandatory · recommended · direct application · named-PI postdoc ·
    open-call postdoc*) with confidence, evidence snippet, and source URL. Official
