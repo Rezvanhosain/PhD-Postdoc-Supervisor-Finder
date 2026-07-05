@@ -49,7 +49,7 @@ def search_euraxess(keywords: str, limit: int = 25) -> list[dict]:
         a = art.find("a", href=True)
         if not a or not a.get_text(strip=True):
             continue
-        href = a["href"]
+        href = a["href"].strip()
         if href.startswith("/"):
             href = "https://euraxess.ec.europa.eu" + href
         text = art.get_text(" ", strip=True)
@@ -78,7 +78,7 @@ def search_findaphd(keywords: str, limit: int = 25) -> list[dict]:
         a = card.find("a", href=True)
         if not a:
             continue
-        href = a["href"]
+        href = a["href"].strip()
         if href.startswith("/"):
             href = "https://www.findaphd.com" + href
         title = a.get_text(strip=True)
@@ -103,7 +103,7 @@ def search_academic_positions(keywords: str, limit: int = 25) -> list[dict]:
     soup = BeautifulSoup(html, "lxml")
     results = []
     for card in soup.select("a[href*='/ad/'], div.job-item a[href]")[:limit]:
-        href = card.get("href", "")
+        href = card.get("href", "").strip()
         if href.startswith("/"):
             href = "https://academicpositions.com" + href
         title = card.get_text(" ", strip=True)
@@ -130,7 +130,7 @@ def search_the_jobs(keywords: str, limit: int = 25) -> list[dict]:
         a = card.find("a", href=True)
         if not a:
             continue
-        href = a["href"]
+        href = a["href"].strip()
         if href.startswith("/"):
             href = "https://www.timeshighereducation.com" + href
         results.append({

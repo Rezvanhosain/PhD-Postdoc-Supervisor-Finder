@@ -2,6 +2,7 @@
 Mass-mailing is intentionally not supported — one email at a time."""
 from __future__ import annotations
 
+import json
 from datetime import date
 
 from app.db import execute, insert, log_error, now, rows
@@ -38,8 +39,14 @@ def send_draft(draft_id: int, provider: str) -> tuple[bool, str]:
                        "from accidentally spamming academics. Try again tomorrow or "
                        "raise the limit in Settings.")
     try:
+        attachments = []
+        if d["attachments"]:
+            try:
+                attachments = [p for p in json.loads(d["attachments"]) if p]
+            except (json.JSONDecodeError, TypeError):
+                attachments = []
         mod = gmail_oauth if provider == "gmail" else outlook_oauth
-        ok = mod.send(d["recipient"], d["subject"], d["body"])
+        ok = mod.send(d["recipient"], d["subject"], d["body"], attachments=attachments)
     except Exception as e:
         log_error("email", f"Send failed to {d['recipient']}", str(e))
         execute("UPDATE email_log SET status='failed', error=? WHERE id=?", (str(e)[:500], draft_id))
