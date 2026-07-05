@@ -1,0 +1,12 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "ppsf",
+      "runtimeExecutable": ".venv/Scripts/python.exe",
+      "runtimeArgs": ["-m", "app.main"],
+      "port": 8765,
+      "env": { "PPSF_NO_SHOW": "1" }
+    }
+  ]
+}
