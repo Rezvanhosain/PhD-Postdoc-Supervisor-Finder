@@ -245,6 +245,289 @@ def step_search() -> None:
     render_table()
 
 
+# ---------------------------------------------------------------- step 2b: manual intake (backup workflow)
+
+_OPP_FORM_FIELDS = [("title", "Title *"), ("university", "Institution"),
+                    ("country", "Country (name or code)"), ("department", "Department / faculty"),
+                    ("kind", "Type (phd / postdoc)"), ("deadline", "Deadline"),
+                    ("funding", "Funding notes"), ("eligibility", "Eligibility"),
+                    ("documents_required", "Required documents"), ("source_url", "Source URL")]
+
+
+def _confidence_badge(conf: float) -> None:
+    color = "green" if conf >= 0.7 else "orange" if conf >= 0.4 else "red"
+    ui.badge(f"extraction confidence {int(conf*100)}%").props(f"color={color}")
+
+
+def step_manual_intake() -> None:
+    from app import intake
+    from app.field import field_relevance
+
+    ui.label("2b — Manual intake (backup when search finds nothing)") \
+        .classes("text-2xl font-bold")
+    ui.label("Paste a call/ad URL or supervisor profile URLs. Extraction is best-effort "
+             "and everything is editable before saving; nothing skips the vetting and "
+             "outreach gate. Uncertainty is always shown, never hidden.") \
+        .classes("text-sm text-gray-500")
+
+    # ---- A. opportunity by URL / manual form ----
+    with ui.card().classes("w-full"):
+        ui.label("Add opportunity — URL or manual").classes("text-lg font-semibold")
+        opp_url = ui.input("Opportunity URL (PhD/postdoc call, scholarship, project, "
+                           "university ad)").classes("w-full")
+        form_area = ui.column().classes("w-full")
+
+        def render_opp_form(fields: dict, conf: float, notes: list[str],
+                            source_type: str) -> None:
+            form_area.clear()
+            with form_area:
+                with ui.row().classes("items-center gap-2"):
+                    _confidence_badge(conf)
+                    ui.badge("source: " + ("pasted URL" if source_type == "manual_url"
+                                           else "manual entry")).props("color=grey")
+                for note in notes:
+                    ui.label("⚠ " + note).classes("text-amber-700 text-sm")
+                widgets = {}
+                for key, label in _OPP_FORM_FIELDS:
+                    widgets[key] = ui.input(label, value=str(fields.get(key) or "")) \
+                        .classes("w-full").props("dense")
+                widgets["description"] = ui.textarea(
+                    "Description", value=str(fields.get("description") or "")) \
+                    .classes("w-full").props("rows=5")
+                fr = field_relevance({**fields, "field": ""})
+                ui.label(f"Field relevance: {fr['verdict']}").classes(
+                    "text-sm " + ("text-green-700" if fr["relevant"] else "text-amber-700"))
+
+                def save() -> None:
+                    vals = {k: w.value.strip() for k, w in widgets.items()}
+                    if not vals["title"]:
+                        notify_warn("Title is required.")
+                        return
+                    pid = intake.save_manual_opportunity(vals, source_type, conf)
+                    if not pid:
+                        notify_warn("Not saved — an opportunity with this source URL "
+                                    "already exists.")
+                        return
+                    db.execute("UPDATE positions SET shortlisted=1 WHERE id=?", (pid,))
+                    notify_ok(f"Opportunity saved and shortlisted (id {pid}). It now "
+                              "appears in Steps 3-6 like any searched result.")
+                    form_area.clear()
+                ui.button("Save opportunity", on_click=save).props("color=primary")
+
+        async def fetch_opp() -> None:
+            if not opp_url.value.strip():
+                notify_warn("Paste a URL first, or use the blank manual form.")
+                return
+            n = ui.notification("Fetching politely and extracting...", spinner=True,
+                                timeout=None)
+            res = await run.io_bound(intake.extract_opportunity, opp_url.value.strip())
+            n.dismiss()
+            render_opp_form(res["fields"], res["confidence"], res["notes"], "manual_url")
+
+        with ui.row():
+            ui.button("Fetch & extract", on_click=fetch_opp).props("color=primary")
+            ui.button("Blank manual form",
+                      on_click=lambda: render_opp_form({}, 0.0, [], "manual_entry")) \
+                .props("outline")
+
+    # ---- B. supervisors by URLs / manual ----
+    with ui.card().classes("w-full mt-4"):
+        ui.label("Add supervisors — URLs (one per line) or manual").classes("text-lg font-semibold")
+        ui.label("Supported: university profile, ORCID, Google Scholar (manual only — "
+                 "not scraped), Semantic Scholar, OpenAlex, staff pages, personal sites. "
+                 "Pasted web text is never treated as verified publication evidence.") \
+            .classes("text-xs text-gray-500")
+        urls_box = ui.textarea("Profile URLs").classes("w-full").props("rows=4")
+        cards_area = ui.column().classes("w-full")
+
+        def render_candidate_card(cand: dict) -> None:
+            with cards_area, ui.card().classes("w-full bg-gray-50"):
+                with ui.row().classes("items-center gap-2"):
+                    ui.badge(intake.detect_profile_kind(cand.get("source_url") or
+                                                        cand.get("profile_url") or "")) \
+                        .props("color=indigo")
+                    _confidence_badge(cand.get("extraction_confidence", 0.0))
+                    ui.badge("unsaved — review & edit").props("color=orange outline")
+                for note in cand.get("notes") or []:
+                    ui.label("⚠ " + note).classes("text-amber-700 text-sm")
+                w = {}
+                for key, label in [("name", "Full name *"), ("title", "Academic title"),
+                                   ("university", "Institution"), ("department", "Department"),
+                                   ("email", "Public email (only if published)"),
+                                   ("profile_url", "Profile URL")]:
+                    w[key] = ui.input(label, value=str(cand.get(key) or "")) \
+                        .classes("w-full").props("dense")
+                areas = ui.input("Research areas (comma-separated)",
+                                 value=", ".join(cand.get("research_areas") or [])) \
+                    .classes("w-full").props("dense")
+                result_lbl = ui.column().classes("w-full")
+
+                async def save(cand=cand) -> None:
+                    c = dict(cand)
+                    c.update({k: x.value.strip() for k, x in w.items()})
+                    c["research_areas"] = [a.strip() for a in areas.value.split(",") if a.strip()]
+                    res = await run.io_bound(intake.save_manual_supervisor, c)
+                    result_lbl.clear()
+                    with result_lbl:
+                        if res["id"]:
+                            ui.label(f"✔ Saved (id {res['id']}). Use Enrich in Step 4 or "
+                                     "link below to run the outreach gate.") \
+                                .classes("text-green-700 text-sm")
+                            for r in res["reasons"]:
+                                ui.label("• " + r).classes("text-xs text-amber-700")
+                        else:
+                            ui.label("✖ Rejected by identity vetting:") \
+                                .classes("text-red-700 text-sm font-medium")
+                            for r in res["reasons"]:
+                                ui.label("• " + r).classes("text-xs text-red-700")
+                ui.button("Vet & save", on_click=save).props("color=primary dense")
+
+        async def fetch_sups() -> None:
+            urls = intake.parse_profile_urls(urls_box.value)
+            if not urls:
+                notify_warn("Paste at least one URL (one per line).")
+                return
+            cards_area.clear()
+            n = ui.notification(f"Extracting {len(urls)} profile(s) politely...",
+                                spinner=True, timeout=None)
+            for u in urls:
+                cand = await run.io_bound(intake.supervisor_from_url, u)
+                render_candidate_card(cand)
+            n.dismiss()
+            notify_ok("Review each card, edit, then Vet & save.")
+
+        with ui.row():
+            ui.button("Extract all URLs", on_click=fetch_sups).props("color=primary")
+            ui.button("Blank manual supervisor",
+                      on_click=lambda: render_candidate_card(
+                          {"source_type": "manual_entry", "notes":
+                           ["manual entry — add an ORCID/profile URL if you have one"],
+                           "extraction_confidence": 0.0})).props("outline")
+
+    # ---- C. link opportunity <-> supervisors, run checks, generate variants ----
+    with ui.card().classes("w-full mt-4"):
+        ui.label("Link & generate — fit, gate, proposal + email variants") \
+            .classes("text-lg font-semibold")
+        pos_all = db.rows("SELECT id,title,university FROM positions "
+                          "WHERE review_status!='hidden' ORDER BY id DESC LIMIT 200")
+        sup_all = db.rows("SELECT id,name,university,source_type FROM supervisors "
+                          "ORDER BY id DESC LIMIT 300")
+        if not pos_all or not sup_all:
+            ui.label("Save at least one opportunity and one supervisor first.") \
+                .classes("text-amber-700")
+            return
+        pos_sel = ui.select({p["id"]: f"#{p['id']} {p['title'][:60]} — {p.get('university') or '?'}"
+                             for p in pos_all}, label="Opportunity",
+                            value=pos_all[0]["id"]).classes("w-full")
+        sup_sel = ui.select({s["id"]: f"#{s['id']} {s['name']} ({s.get('university') or '?'}) "
+                             f"[{s['source_type']}]" for s in sup_all},
+                            multiple=True, label="Supervisors").classes("w-full") \
+            .props("use-chips")
+        out = ui.column().classes("w-full")
+
+        async def run_checks() -> None:
+            p = profile_or_warn()
+            if not p or not sup_sel.value:
+                if p:
+                    notify_warn("Select at least one supervisor.")
+                return
+            n = ui.notification("Linking + running fit, readiness and gate...",
+                                spinner=True, timeout=None)
+            reports = await run.io_bound(intake.link_and_check, p, pos_sel.value,
+                                         list(sup_sel.value))
+            n.dismiss()
+            out.clear()
+            with out:
+                for rep in reports:
+                    with ui.card().classes("w-full"):
+                        fit = rep.get("fit") or {}
+                        with ui.row().classes("items-center gap-2 flex-wrap"):
+                            ui.label(rep["full_name"]).classes("font-semibold")
+                            ui.badge(f"fit {fit.get('score','?')} · "
+                                     f"{fit.get('recommendation','?')}").props("color=indigo")
+                            ui.badge(f"topical {rep.get('topical_fit','?')}").props("color=grey")
+                            cr = rep.get("contact_readiness", 0)
+                            ui.badge(f"contact-ready {cr}/100").props(
+                                f"color={'green' if cr >= 60 else 'orange' if cr >= 30 else 'red'}")
+                            ui.badge(f"email: {rep.get('email_confidence','unknown')}") \
+                                .props("color=grey outline")
+                        if rep.get("outreach_allowed"):
+                            ui.label("✔ Outreach ALLOWED for this pairing.") \
+                                .classes("text-green-700 font-medium")
+                        else:
+                            ui.label("✖ Outreach BLOCKED — reasons:") \
+                                .classes("text-red-700 font-medium")
+                        for r in rep.get("gate_reasons") or []:
+                            ui.label("• " + r).classes("text-xs text-gray-700")
+                        for e in (rep.get("evidence") or [])[:6]:
+                            ui.label("· " + e).classes("text-xs text-gray-500")
+                        gen_area = ui.column().classes("w-full")
+
+                        async def gen_proposals(sid=rep["id"]) -> None:
+                            from app.variants import proposal_variants
+                            prof = db.load_profile() or {}
+                            pos = db.rows("SELECT * FROM positions WHERE id=?",
+                                          (pos_sel.value,))[0]
+                            sup = db.rows("SELECT * FROM supervisors WHERE id=?", (sid,))[0]
+                            topic = ", ".join(prof.get("research_areas", [])[:2]) \
+                                or pos.get("title", "")
+                            nn = ui.notification("Generating 3 proposal variants "
+                                                 "(verifying references)...",
+                                                 spinner=True, timeout=None)
+                            res = await run.io_bound(proposal_variants, prof, pos, sup, topic)
+                            nn.dismiss()
+                            gen_area.clear()
+                            with gen_area:
+                                ui.label(f"{res['verified']} verified references used; "
+                                         f"{res['flagged']} sent to manual review. "
+                                         f"Saved: {res['file']}").classes("text-sm text-indigo-700")
+                                for v in res["variants"]:
+                                    with ui.expansion(f"{v['angle']} — {v['title'][:70]}") \
+                                            .classes("w-full text-sm"):
+                                        if v["template_fallback"]:
+                                            ui.badge("Template fallback: needs human rewrite") \
+                                                .props("color=orange")
+                                        for k in ("rationale", "research_gap", "method",
+                                                  "expected_contribution", "timeline"):
+                                            ui.label(f"{k.replace('_',' ').title()}: {v[k]}")
+                                        ui.label("RQs: " + "; ".join(v["research_questions"]))
+                                        ui.label("References (verified only):").classes("font-medium")
+                                        for b in v["references"] or ["(none verified)"]:
+                                            ui.label("• " + b).classes("text-xs")
+
+                        async def gen_emails(sid=rep["id"]) -> None:
+                            from app.variants import email_variants
+                            prof = db.load_profile() or {}
+                            pos = db.rows("SELECT * FROM positions WHERE id=?",
+                                          (pos_sel.value,))[0]
+                            sup = db.rows("SELECT * FROM supervisors WHERE id=?", (sid,))[0]
+                            res = await run.io_bound(email_variants, prof, pos, sup)
+                            gen_area.clear()
+                            with gen_area:
+                                if res["blocked"]:
+                                    ui.label("✖ " + res["warning"]) \
+                                        .classes("text-red-700 text-sm font-medium")
+                                    return
+                                ui.label("3 drafts created — review and send in Step 7. "
+                                         "Nothing is ever sent automatically.") \
+                                    .classes("text-sm text-green-700")
+                                for d in res["drafts"]:
+                                    with ui.expansion(f"{d['variant']} — {d['subject'][:60]}") \
+                                            .classes("w-full text-sm"):
+                                        ui.badge(d["note"]).props(
+                                            f"color={'orange' if d['template_fallback'] else 'blue'}")
+                                        ui.label(d["body"]).classes(
+                                            "text-xs whitespace-pre-line")
+
+                        with ui.row():
+                            ui.button("3 proposal variants", on_click=gen_proposals) \
+                                .props("outline dense")
+                            ui.button("3 email variants", on_click=gen_emails) \
+                                .props("outline dense color=indigo")
+
+        ui.button("Link + run checks", on_click=run_checks).props("color=primary")
+
+
 # ---------------------------------------------------------------- step 3: classify & shortlist
 
 def step_classify() -> None:
@@ -935,6 +1218,7 @@ SECTIONS = [
     ("Dashboard", "dashboard", dashboard),
     ("1 · Profile", "upload_file", step_profile),
     ("2 · Search", "search", step_search),
+    ("2b · Manual Intake", "add_link", step_manual_intake),
     ("3 · Classify & Shortlist", "rule", step_classify),
     ("4 · Supervisors", "school", step_supervisors),
     ("5 · Fit", "join_inner", step_fit),

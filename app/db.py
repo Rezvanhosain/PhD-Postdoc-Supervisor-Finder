@@ -110,6 +110,9 @@ MIGRATIONS: dict[str, list[tuple[str, str]]] = {
         ("class_evidence", "TEXT DEFAULT ''"),
         ("class_source_url", "TEXT DEFAULT ''"),
         ("class_source_official", "INTEGER DEFAULT 0"),
+        ("source_type", "TEXT DEFAULT ''"),             # ''|manual_url|manual_entry
+        ("extraction_confidence", "REAL DEFAULT 0"),
+        ("documents_required", "TEXT DEFAULT ''"),
     ],
     "supervisors": [
         ("title", "TEXT DEFAULT ''"),
