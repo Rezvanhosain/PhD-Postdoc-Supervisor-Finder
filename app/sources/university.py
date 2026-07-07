@@ -174,11 +174,29 @@ def people_from_official_page(url: str, university: str, country: str) -> list[d
             if surname and surname in e.lower():
                 p["email"] = e
                 p["email_confidence"] = "scraped"
+                # a real address on an official page confirms the mail domain
+                from app.sources.enrich import register_mail_domain
+                key = (university.split() or [""])[0]
+                register_mail_domain(key, e.split("@", 1)[1])
                 break
     return list(people.values())
 
 
 def save_supervisor(s: dict, position_id: int = 0) -> int:
+    """Store a supervisor record ONLY if identity vetting passes: a person-like
+    name plus at least one supporting source signal. Rejected records are
+    logged (not silently dropped) so the UI can show why. Returns 0 on
+    rejection. Evidence signals are stored inside the metrics JSON."""
+    from app.vetting import validate_supervisor
+    v = validate_supervisor(s)
+    if not v["valid"]:
+        log_error("supervisor",
+                  f"Rejected non-person / unverifiable supervisor candidate "
+                  f"'{s.get('name','')}' ({s.get('source_url','')}): "
+                  + "; ".join(v["reasons"]), needs_review=False)
+        return 0
+    metrics = dict(s.get("metrics") or {})
+    metrics["evidence"] = v["evidence"]
     return insert(
         "supervisors",
         name=s["name"], title=s.get("title", ""), university=s.get("university", ""),
@@ -188,7 +206,7 @@ def save_supervisor(s: dict, position_id: int = 0) -> int:
         profile_url=s.get("profile_url", ""),
         research_areas=json.dumps(s.get("research_areas", [])),
         publications=json.dumps(s.get("publications", [])),
-        metrics=json.dumps(s.get("metrics", {})),
+        metrics=json.dumps(metrics),
         supervises_phd=s.get("supervises_phd", "unknown"),
         source=s.get("source", ""), source_type=s.get("source_type", "unofficial"),
         source_url=s.get("source_url", ""), date_accessed=now(),
@@ -197,10 +215,52 @@ def save_supervisor(s: dict, position_id: int = 0) -> int:
     )
 
 
+def web_fallback_candidates(university: str, topic: str,
+                            homepage: str = "", max_hits: int = 3) -> list[dict]:
+    """Last-resort discovery via a public web search (DuckDuckGo HTML —
+    Google-style fallback without an API key). Only profile pages on the
+    university's own domain are followed; each is then mined exactly like an
+    official staff page, so the same vetting applies."""
+    from urllib.parse import parse_qs, quote, unquote, urlparse as _up
+    q = quote(f"{university} professor {topic}")
+    html = get(f"https://html.duckduckgo.com/html/?q={q}", check_robots=True)
+    if not html:
+        return []
+    soup = BeautifulSoup(html, "lxml")
+    urls: list[str] = []
+    for a in soup.select("a.result__a, a[href*='uddg=']"):
+        href = a.get("href", "")
+        if "uddg=" in href:
+            href = unquote(parse_qs(_up(href).query).get("uddg", [""])[0])
+        if not href.startswith("http"):
+            continue
+        if homepage and not _same_site(href, homepage):
+            continue
+        if not homepage and not any(
+                w[:8] in _up(href).netloc.lower() for w in university.lower().split()
+                if len(w) > 5):
+            continue
+        if href not in urls:
+            urls.append(href)
+    people: list[dict] = []
+    for u in urls[:max_hits]:
+        found = people_from_official_page(u, university, "")
+        for p in found:
+            p["source"] = "web_search_fallback"
+        people += found
+    return people
+
+
 def find_supervisors_for_position(position_id: int, topic: str,
                                   max_bibliometric: int = 15) -> dict:
     """Orchestrator: for one shortlisted opportunity, find supervisors/PIs
-    constrained to its university. Returns counts + institution info."""
+    constrained to its university. Sources are tried in a fallback chain —
+    a failure or empty result in one source never ends the search:
+      OpenAlex-at-institution -> official people pages -> the ad page itself
+      -> broad OpenAlex topic authors filtered to the institution
+      -> public web search restricted to the university's own domain.
+    Every candidate from every route passes the same identity vetting.
+    Returns counts + institution info + ids of saved supervisors."""
     got = rows("SELECT * FROM positions WHERE id=?", (position_id,))
     if not got:
         return {"error": "position not found", "official": 0, "bibliometric": 0}
@@ -211,27 +271,54 @@ def find_supervisors_for_position(position_id: int, topic: str,
                 "first (edit the row) so the search can be constrained.",
                 "official": 0, "bibliometric": 0}
     inst = resolve_institution(uni)
-    n_official = n_biblio = 0
+    n_official = n_biblio = n_fallback = n_rejected = 0
+    saved_ids: list[int] = []
+
+    def _save(s: dict) -> int:
+        nonlocal n_rejected
+        sid = save_supervisor(s, position_id)
+        if sid:
+            saved_ids.append(sid)
+        else:
+            n_rejected += 1
+        return sid
+
+    homepage = ""
     if inst:
-        for s in authors_at_institution(inst, topic, limit=max_bibliometric):
-            if save_supervisor(s, position_id):
-                n_biblio += 1
         homepage = inst.get("homepage", "")
+        for s in authors_at_institution(inst, topic, limit=max_bibliometric):
+            if _save(s):
+                n_biblio += 1
         for page in find_people_pages(homepage, topic):
             for p in people_from_official_page(page, inst["name"], inst.get("country", "")):
-                if save_supervisor(p, position_id):
+                if _save(p):
                     n_official += 1
     else:
-        log_error("supervisor", f"Could not resolve institution '{uni}' via OpenAlex.",
+        log_error("supervisor", f"Could not resolve institution '{uni}' via OpenAlex; "
+                  "continuing with official-page and web fallbacks.",
                   needs_review=True)
     # if the ad page itself is official, mine it for named PIs too
     src = pos.get("source_url") or ""
     from app.classify import is_official_url
     if is_official_url(src):
         for p in people_from_official_page(src, uni, pos.get("country", "")):
-            if save_supervisor(p, position_id):
+            if _save(p):
                 n_official += 1
-    return {"institution": inst, "official": n_official, "bibliometric": n_biblio}
+    # fallback 1: broad OpenAlex topic authors, hard-filtered to institution name
+    if not saved_ids and inst:
+        from app.sources.openalex import search_authors
+        for a in search_authors(topic, country=inst.get("country") or None):
+            if (a.get("university") or "").lower() == inst["name"].lower():
+                a["source_type"] = "unofficial"
+                if _save(a):
+                    n_fallback += 1
+    # fallback 2: public web search restricted to the university's own domain
+    if not saved_ids:
+        for p in web_fallback_candidates(uni, topic, homepage):
+            if _save(p):
+                n_fallback += 1
+    return {"institution": inst, "official": n_official, "bibliometric": n_biblio,
+            "fallback": n_fallback, "rejected": n_rejected, "saved_ids": saved_ids}
 
 
 def fetch_publications(supervisor_id: int, limit: int = 5) -> int:

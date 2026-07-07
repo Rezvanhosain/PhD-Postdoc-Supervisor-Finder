@@ -196,9 +196,37 @@ def _areas_clause(supervisor: dict) -> str:
     return f" on {', '.join(areas[:2])}" if areas else ""
 
 
-def generate_email(profile: dict, supervisor: dict, topic: str) -> dict:
-    """Draft outreach email. Mentions publications ONLY from the supervisor's
+def generate_email(profile: dict, supervisor: dict, topic: str,
+                   position: dict | None = None) -> dict:
+    """Draft outreach email — behind the outreach safety gate.
+
+    No draft is created unless the supervisor passes identity validation,
+    their institution matches the opportunity's (when a position is given),
+    and topical fit clears the threshold. A blocked result carries the exact
+    failed checks so the UI shows 'manual review required' instead of a
+    misleading email. Mentions publications ONLY from the supervisor's
     verified publication list stored in the DB."""
+    from app.vetting import outreach_gate, validate_supervisor
+    if position is not None:
+        gate = outreach_gate(profile, position, supervisor)
+    else:
+        v = validate_supervisor(supervisor)
+        email = (supervisor.get("email") or "").strip()
+        conf = supervisor.get("email_confidence") or "unknown"
+        recipient = ("missing" if not email
+                     else "guessed" if conf == "pattern_guess" else "present")
+        reasons = [f"identity: {r}" for r in v["reasons"]] if not v["valid"] else []
+        if recipient != "present":
+            reasons.append(f"recipient email: {recipient} — verify a real public "
+                           "address on the official profile page first")
+        gate = {"allowed": v["valid"] and recipient == "present",
+                "checks": {"identity": v["valid"], "recipient_email": recipient == "present"},
+                "reasons": reasons, "recipient_email": recipient}
+    if not gate["allowed"]:
+        return {"id": None, "blocked": True, "gate": gate,
+                "warning": "Manual review required — no outreach draft was generated: "
+                           + "; ".join(gate["reasons"])}
+
     pubs = supervisor.get("publications", [])
     if isinstance(pubs, str):
         pubs = json.loads(pubs or "[]")
@@ -239,6 +267,7 @@ def generate_email(profile: dict, supervisor: dict, topic: str) -> dict:
                       related_id=supervisor.get("id", 0), created_at=now())
     return {"id": email_id, "subject": subject, "body": body,
             "recipient": supervisor.get("email", ""),
+            "recipient_email": gate["recipient_email"], "gate": gate,
             "warning": None if verified_pubs else
             "No verified publications on file for this supervisor — the email does not cite "
             "specific papers. Fetch their recent works first for a stronger opener."}

@@ -205,8 +205,87 @@ def search_the_jobs(keywords: str, limit: int = 25) -> list[dict]:
     return results
 
 
+# Common non-European locations that appear on jobs.ac.uk but which the
+# small country gazetteer does not resolve; used to keep the Europe-only guard
+# honest when a listing gives only a city/region.
+_JOBS_NON_EUROPE = {
+    "saudi", "arabia", "riyadh", "jeddah", "qatar", "doha", "emirates", "uae",
+    "dubai", "abu dhabi", "kuwait", "oman", "muscat", "bahrain", "china",
+    "shanghai", "beijing", "shenzhen", "hong kong", "singapore", "malaysia",
+    "japan", "tokyo", "korea", "india", "usa", "united states", "america",
+    "canada", "australia", "new zealand", "south africa", "brazil", "mexico",
+    "egypt", "nigeria", "kenya", "ghana", "kazakhstan",
+}
+
+
+def search_jobs_ac_uk(keywords: str, limit: int = 25) -> list[dict]:
+    """jobs.ac.uk listing search — the largest UK/European academic board and
+    the strongest source for this candidate's field (development studies,
+    social & public policy, nonprofit/NGO, social sciences), which EURAXESS
+    under-covers. Responds to this polite client without header spoofing
+    (verified live). Structured fields per result card:
+      title + href (a), department (.j-search-result__department),
+      employer (.j-search-result__employer), a plain 'Location: <city>' div,
+      and a 'Salary:' info block. No machine-readable deadline on the listing
+      page (only 'Date Placed'), so deadline is left blank rather than guessed.
+    Europe-only and country filtering are enforced downstream by _passes()."""
+    url = "https://www.jobs.ac.uk/search/"
+    html = get(url, params={"keywords": keywords, "sort": "re"}, check_robots=True)
+    if not html:
+        return []
+    soup = BeautifulSoup(html, "lxml")
+    results: list[dict] = []
+    for card in soup.select("div.j-search-result__text")[:limit]:
+        a = card.find("a", href=True)
+        if not a or not a.get_text(strip=True):
+            continue
+        href = a["href"].strip()
+        if href.startswith("/"):
+            href = "https://www.jobs.ac.uk" + href
+        dept_el = card.select_one(".j-search-result__department")
+        emp_el = card.select_one(".j-search-result__employer")
+        university = emp_el.get_text(" ", strip=True) if emp_el else ""
+        # the location sits in a bare <div> starting with "Location:"
+        location = ""
+        for d in card.find_all("div"):
+            t = d.get_text(" ", strip=True)
+            if t.startswith("Location:"):
+                location = t.split(":", 1)[1].strip()
+                break
+        # jobs.ac.uk is UK-domiciled and lists mostly bare cities the country
+        # gazetteer can't resolve ("Oxford", "London"). A recognised country
+        # wins; a location naming a common non-European country is dropped
+        # (kept honest for the Europe-only guard); otherwise it defaults to the
+        # UK so genuine UK city-only listings are not lost to country filters.
+        country = ""
+        if location:
+            country = detect_country(location)
+            if not country:
+                loc_l = location.lower()
+                if any(w in loc_l for w in _JOBS_NON_EUROPE):
+                    country = "Non-Europe"  # explicit -> fails is_europe()
+                else:
+                    tail = location.split(",")[-1].strip()
+                    country = tail if detect_country(tail) else "United Kingdom"
+        results.append({
+            "title": a.get_text(" ", strip=True),
+            "university": university,
+            "department": dept_el.get_text(" ", strip=True) if dept_el else "",
+            "country": country, "deadline": "", "eligibility": "",
+            "description": f"{a.get_text(' ', strip=True)}. "
+                           f"{dept_el.get_text(' ', strip=True) if dept_el else ''}. "
+                           f"Location: {location}."[:1500],
+            "source": "jobs.ac.uk", "source_url": href,
+        })
+    if not results:
+        log_error("scrape", "jobs.ac.uk parse produced no results (markup may have "
+                  "changed).", needs_review=True)
+    return results
+
+
 SOURCES: dict[str, Callable[[str, int], list[dict]]] = {
     "EURAXESS": search_euraxess,
+    "jobs.ac.uk": search_jobs_ac_uk,
     "THE Jobs": search_the_jobs,
 }
 
@@ -278,6 +357,14 @@ def search_all(keywords: str, sources: list[str] | None = None,
             queries.append(f"{country} {words[0]}")
     if len(words) > 2:
         queries.append(words[0])
+    # Field-aware expansion: broad boards need the field's own vocabulary to
+    # surface the candidate's discipline (a generic keyword misses most of it).
+    # Callers pass filters['field_queries'] = list of representative phrases;
+    # each is run alone and (when a country is set) country-scoped.
+    for fq in (filters.get("field_queries") or []):
+        queries.append(fq)
+        if country:
+            queries.append(f"{country} {fq}")
     all_results = []
     seen_urls: set[str] = set()
     for name, fn in SOURCES.items():

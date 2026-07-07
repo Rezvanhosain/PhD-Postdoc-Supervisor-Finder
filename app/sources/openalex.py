@@ -125,6 +125,18 @@ def search_works(query: str, limit: int = 10) -> list[dict]:
 def save_supervisor(s: dict) -> int:
     import json as _json
 
+    from app.vetting import validate_supervisor
+    v = validate_supervisor(s)
+    if not v["valid"]:
+        from app.db import log_error
+        log_error("supervisor",
+                  f"Rejected non-person / unverifiable supervisor candidate "
+                  f"'{s.get('name','')}': " + "; ".join(v["reasons"]),
+                  needs_review=False)
+        return 0
+    metrics = dict(s.get("metrics") or {})
+    metrics["evidence"] = v["evidence"]
+    s = {**s, "metrics": metrics}
     return insert(
         "supervisors",
         name=s["name"], university=s["university"], department=s.get("department", ""),

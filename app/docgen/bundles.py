@@ -196,7 +196,7 @@ def generate_bundle(profile: dict, pos: dict, sup: dict | None,
         cn["kind"] = "concept_note"
         docs.append(cn)
         if sup:
-            em = generate_email(profile, sup, topic)
+            em = generate_email(profile, sup, topic, position=pos)
             email_id = em["id"]
             if em.get("warning"):
                 notes.append(em["warning"])
@@ -216,10 +216,13 @@ def generate_bundle(profile: dict, pos: dict, sup: dict | None,
             pr["kind"] = "proposal"
             docs.append(pr)
         if sup and fit and fit.get("outreach_useful"):
-            em = generate_email(profile, sup, topic)
+            em = generate_email(profile, sup, topic, position=pos)
             email_id = em["id"]
-            notes.append("Direct application: supervisor email is optional but the fit "
-                         "engine judged outreach useful here.")
+            if em.get("warning"):
+                notes.append(em["warning"])
+            if email_id:
+                notes.append("Direct application: supervisor email is optional but the "
+                             "fit engine judged outreach useful here.")
     else:  # C — postdoc
         cl = generate_cover_letter(profile, pos, sup)
         cl["kind"] = "cover_letter"
@@ -233,8 +236,10 @@ def generate_bundle(profile: dict, pos: dict, sup: dict | None,
             pr["kind"] = "proposal"
             docs.append(pr)
         if sup:
-            em = generate_email(profile, sup, topic)
+            em = generate_email(profile, sup, topic, position=pos)
             email_id = em["id"]
+            if em.get("warning"):
+                notes.append(em["warning"])
 
     paths = [d.get("docx", "") for d in docs]
     if email_id:

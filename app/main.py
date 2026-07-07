@@ -179,6 +179,7 @@ def render_profile_editor(container) -> None:
 # ---------------------------------------------------------------- step 2: search
 
 def step_search() -> None:
+    from app.field import FIELD_QUERIES
     from app.sources.positions import SOURCES, search_all
 
     ui.label("Step 2 — Search opportunities (Europe only)").classes("text-2xl font-bold")
@@ -230,7 +231,10 @@ def step_search() -> None:
         n = ui.notification("Searching sources (rate-limited, may take a minute)...",
                             spinner=True, timeout=None)
         filters = {"country": country.value, "kind": kind.value,
-                   "university": uni.value, "field": field.value}
+                   "university": uni.value, "field": field.value,
+                   # field-aware expansion: run the candidate's own field
+                   # vocabulary against the boards, not just the raw keywords
+                   "field_queries": FIELD_QUERIES}
         found = await run.io_bound(search_all, kw.value, src.value, filters)
         n.dismiss()
         notify_ok(f"Search finished: {len(found)} Europe-matched results stored. "
@@ -245,6 +249,7 @@ def step_search() -> None:
 
 def step_classify() -> None:
     from app.classify import LABELS, classify_and_store
+    from app.field import field_relevance
 
     ui.label("Step 3 — Classify admission path & shortlist").classes("text-2xl font-bold")
     ui.label("Classification prefers official university pages over portals; the evidence "
@@ -273,7 +278,13 @@ def step_classify() -> None:
                                         (db.execute("UPDATE positions SET shortlisted=? WHERE id=?",
                                                     (int(e.value), pid))))
                             ui.label(f"{pos['title'][:90]}").classes("font-semibold")
-                        class_badge(pos)
+                        with ui.row().classes("items-center gap-2"):
+                            fr = field_relevance(pos)
+                            ui.badge("field: aligned" if fr["relevant"] else "field: weak/off") \
+                                .props(f"color={'green' if fr['relevant'] else 'orange'}")
+                            class_badge(pos)
+                    ui.label(f"Field check: {fr['verdict']}").classes(
+                        "text-xs " + ("text-green-700" if fr["relevant"] else "text-amber-700"))
                     ui.label(f"{pos.get('university') or '(university unknown — edit below)'} · "
                              f"{pos.get('country') or '?'} · {pos.get('kind') or '?'} · "
                              f"deadline: {pos.get('deadline') or 'unknown'}") \
@@ -378,6 +389,9 @@ def step_supervisors() -> None:
                     ui.label(f"{len(sups)} supervisors found for this opportunity") \
                         .classes("text-sm text-gray-600")
                     for s in sups[:25]:
+                        metrics = json.loads(s.get("metrics") or "{}")
+                        readiness = metrics.get("contact_readiness")
+                        conf = s.get("email_confidence") or "unknown"
                         with ui.row().classes("items-center gap-2 w-full"):
                             ui.badge("official" if s["source_type"] == "official" else "OpenAlex") \
                                 .props(f"color={'green' if s['source_type']=='official' else 'grey'}")
@@ -388,6 +402,18 @@ def step_supervisors() -> None:
                                 ui.label(", ".join(areas[:3])).classes("text-xs text-gray-500")
                             if s.get("email"):
                                 ui.label(s["email"]).classes("text-xs text-blue-700")
+                                if conf == "pattern_guess":
+                                    ui.badge("email: GUESSED — verify").props("color=orange")
+                                elif conf in ("official_page", "orcid_public", "manual_verified"):
+                                    ui.badge(f"email: verified ({conf.replace('_',' ')})") \
+                                        .props("color=green")
+                                else:
+                                    ui.badge("email: unconfirmed source").props("color=grey")
+                            else:
+                                ui.badge("no public email").props("color=grey")
+                            if readiness is not None:
+                                ui.badge(f"contact-ready {readiness}/100").props(
+                                    f"color={'green' if readiness >= 60 else 'orange' if readiness >= 30 else 'red'}")
                             n_pubs = len(json.loads(s.get("publications") or "[]"))
                             ui.label(f"{n_pubs} pubs").classes("text-xs text-gray-400")
 
@@ -399,9 +425,62 @@ def step_supervisors() -> None:
                                 notify_ok(f"{n2} verified publications fetched.")
                                 render()
                             ui.button("Pubs", on_click=pubs).props("flat dense")
+
+                            async def enrich(sid=s["id"]):
+                                from app.sources.enrich import enrich_supervisor
+                                nn = ui.notification("Enriching identity (ORCID, Semantic "
+                                                     "Scholar, official page)...",
+                                                     spinner=True, timeout=None)
+                                res = await run.io_bound(enrich_supervisor, sid)
+                                nn.dismiss()
+                                notify_ok(f"Enriched: contact-readiness {res.get('contact_readiness','?')}/100, "
+                                          f"added {', '.join(res.get('added') or ['nothing new'])}.")
+                                render()
+                            ui.button("Enrich", on_click=enrich).props("flat dense color=indigo")
+
+                            if conf == "pattern_guess" and s.get("email"):
+                                def verify_email(sup=s):
+                                    with ui.dialog() as dlg, ui.card():
+                                        ui.label(f"Confirm you checked {sup['name']}'s official "
+                                                 f"profile page and that {sup['email']} is the "
+                                                 "address published there.").classes("w-96")
+                                        def yes():
+                                            db.execute("UPDATE supervisors SET email_confidence="
+                                                       "'manual_verified' WHERE id=?", (sup["id"],))
+                                            dlg.close()
+                                            notify_ok("Email marked manually verified.")
+                                            render()
+                                        ui.button("I verified it on the official page",
+                                                  on_click=yes).props("color=green")
+                                        ui.button("Cancel", on_click=dlg.close).props("flat")
+                                    dlg.open()
+                                ui.button("Mark verified", on_click=verify_email) \
+                                    .props("flat dense color=orange")
                             if s.get("profile_url"):
                                 ui.link("profile", s["profile_url"], new_tab=True) \
                                     .classes("text-xs self-center")
+                        # Outreach-gate preview: exactly why an email would be
+                        # allowed or blocked for this supervisor+opportunity.
+                        with ui.expansion("Outreach check — evidence & gate").classes(
+                                "w-full text-sm"):
+                            from app.sources.enrich import candidate_report
+                            rep = candidate_report(db.load_profile() or {}, pos, s["id"])
+                            sim = rep.get("topical_fit", 0)
+                            strength = ("direct" if sim >= 0.15 else
+                                        "adjacent" if sim >= 0.05 else "weak")
+                            ui.label(f"Topical fit {sim} → {strength} match · "
+                                     f"contact-readiness {rep.get('contact_readiness','?')}/100 · "
+                                     f"email: {rep.get('email_confidence','unknown')}")
+                            if rep.get("outreach_allowed"):
+                                ui.label("✔ Outreach draft ALLOWED for this pairing.") \
+                                    .classes("text-green-700 font-medium")
+                            else:
+                                ui.label("✖ Outreach draft BLOCKED — manual review required:") \
+                                    .classes("text-red-700 font-medium")
+                            for r in rep.get("gate_reasons") or []:
+                                ui.label("• " + r).classes("text-xs text-gray-700")
+                            for e in rep.get("evidence") or []:
+                                ui.label("· " + e).classes("text-xs text-gray-500")
 
                     async def find(pid=pos["id"]):
                         if not topic.value.strip():
