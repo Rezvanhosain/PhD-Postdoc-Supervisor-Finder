@@ -12,3 +12,9 @@ __pycache__/
 .DS_Store
 dist/
 build/
+
+# proposal_engine generated artifacts / local runtime (never commit output)
+proposal_engine_out/
+proposal_engine_out_*/
+.pe_backups/
+.proposal_engine_app.pid

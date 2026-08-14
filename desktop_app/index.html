@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Proposal Engine — Local</title>
+<style>
+  :root{
+    --navy:#04365b; --teal:#2e74b5; --accent:#0f4761; --bar:#52b2c0;
+    --bg:#f4f6f8; --card:#ffffff; --line:#dfe4ea; --ink:#1f2733; --muted:#5b6772;
+    --ok:#1a7f45; --warn:#9a6a00; --err:#b3261e;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font:15px/1.5 "Segoe UI",system-ui,Arial,sans-serif}
+  header{background:var(--navy);color:#fff;padding:16px 22px;display:flex;
+         align-items:center;justify-content:space-between}
+  header h1{font-size:18px;margin:0;font-weight:600}
+  #stopBtn{background:#e9edf1;color:var(--navy);border:0;border-radius:6px;
+           padding:8px 14px;font-weight:600;cursor:pointer}
+  #stopBtn:hover{background:#fff}
+  main{max-width:920px;margin:22px auto;padding:0 18px;display:grid;gap:18px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:18px}
+  h2{font-size:15px;margin:0 0 12px;color:var(--accent)}
+  label{display:block;font-weight:600;margin:12px 0 4px}
+  .hint{color:var(--muted);font-weight:400;font-size:13px}
+  input[type=text],textarea{width:100%;padding:9px 10px;border:1px solid var(--line);
+    border-radius:6px;font:inherit;background:#fcfdfe}
+  textarea{min-height:96px;resize:vertical}
+  .row{display:flex;gap:14px;flex-wrap:wrap}
+  .row>div{flex:1 1 260px}
+  .check{display:flex;align-items:center;gap:8px;margin-top:12px;font-weight:600}
+  .primary{background:var(--accent);color:#fff;border:0;border-radius:7px;
+    padding:11px 20px;font-weight:700;font-size:15px;cursor:pointer;margin-top:16px}
+  .primary:disabled{opacity:.55;cursor:default}
+  .file{display:flex;align-items:center;gap:10px}
+  .fbtn{background:#eef2f6;border:1px solid var(--line);border-radius:6px;
+    padding:8px 12px;cursor:pointer;font-weight:600}
+  .msg{margin:0 0 10px;font-weight:600}
+  .pre{background:#fbf7ec;border:1px solid #ecdcb3;border-radius:8px;padding:10px 12px;
+    color:#6b5410;font-size:13px;white-space:pre-wrap;margin:0 0 12px}
+  .topic{border:1px solid var(--line);border-radius:9px;padding:12px 14px;margin-top:10px}
+  .thead{display:flex;justify-content:space-between;align-items:center;gap:10px}
+  .ttitle{font-weight:600}
+  .badge{font-size:12px;font-weight:700;padding:3px 9px;border-radius:20px;white-space:nowrap}
+  .b-queued{background:#eceff2;color:#5b6772}
+  .b-running{background:#e6f0fb;color:#1e63b0}
+  .b-done{background:#e3f4ea;color:var(--ok)}
+  .b-failed{background:#fbe7e5;color:var(--err)}
+  .meta{color:var(--muted);font-size:13px;margin:6px 0}
+  .warn{color:var(--warn);font-size:13px;margin:4px 0}
+  .err{color:var(--err);font-size:13px;margin:4px 0}
+  .dl{display:inline-block;margin:8px 10px 0 0;background:var(--bar);color:#083;
+    color:#04303a;text-decoration:none;padding:7px 13px;border-radius:6px;font-weight:700}
+  .dl.pdf{background:var(--accent);color:#fff}
+  .spin{display:inline-block;width:13px;height:13px;border:2px solid #cbd5df;
+    border-top-color:var(--teal);border-radius:50%;animation:sp .8s linear infinite;
+    vertical-align:-2px;margin-right:6px}
+  @keyframes sp{to{transform:rotate(360deg)}}
+  .foot{color:var(--muted);font-size:12px;text-align:center;padding:6px 0 26px}
+</style>
+</head>
+<body>
+<header>
+  <h1>Proposal Engine — Local</h1>
+  <button id="stopBtn" onclick="stopApp()">■ Stop Local App</button>
+</header>
+
+<main>
+  <div class="card">
+    <h2>1 · Inputs</h2>
+    <label>Candidate CV / profile <span class="hint">(optional — PDF/DOCX/TXT)</span></label>
+    <div class="file">
+      <label class="fbtn">Choose file…<input id="cvFile" type="file" hidden onchange="uploadCv()"></label>
+      <span id="cvName" class="hint">No file selected</span>
+    </div>
+
+    <label>Research topics <span class="hint">— one per line. Optional <code>id | Title</code>.</span></label>
+    <textarea id="topics" placeholder="Privacy-preserving federated learning for clinical decision support
+AI governance in public-sector digital identity systems"></textarea>
+
+    <div class="row">
+      <div>
+        <label>Config file <span class="hint">(blank = default)</span></label>
+        <input id="config" type="text" placeholder="proposal_engine/examples/config.yaml">
+      </div>
+      <div>
+        <label>Output folder <span class="hint">(blank = proposal_engine_out)</span></label>
+        <input id="out" type="text" placeholder="proposal_engine_out">
+      </div>
+    </div>
+    <label class="check"><input id="force" type="checkbox" checked> Regenerate from scratch (--force)</label>
+
+    <button id="goBtn" class="primary" onclick="generate()">Generate Proposals</button>
+  </div>
+
+  <div class="card" id="statusCard" style="display:none">
+    <h2>2 · Progress</h2>
+    <p class="msg" id="jobMsg"><span class="spin"></span>Starting…</p>
+    <div class="pre" id="preflight" style="display:none"></div>
+    <div id="topicList"></div>
+  </div>
+  <div class="foot" id="foot"></div>
+</main>
+
+<script>
+let cvPath = "";
+let polling = null;
+
+async function uploadCv(){
+  const f = document.getElementById('cvFile').files[0];
+  if(!f) return;
+  document.getElementById('cvName').textContent = "Uploading " + f.name + "…";
+  const fd = new FormData(); fd.append('file', f);
+  try{
+    const r = await fetch('/api/upload', {method:'POST', body:fd});
+    const j = await r.json(); cvPath = j.path;
+    document.getElementById('cvName').textContent = j.name + "  ✓";
+  }catch(e){ document.getElementById('cvName').textContent = "Upload failed"; }
+}
+
+async function generate(){
+  const topics = document.getElementById('topics').value.trim();
+  if(!topics){ alert('Enter at least one research topic.'); return; }
+  const go = document.getElementById('goBtn'); go.disabled = true;
+  document.getElementById('statusCard').style.display = 'block';
+  document.getElementById('jobMsg').innerHTML = '<span class="spin"></span>Submitting…';
+  const fd = new FormData();
+  fd.append('topics', topics);
+  fd.append('config_path', document.getElementById('config').value.trim());
+  fd.append('out_dir', document.getElementById('out').value.trim());
+  fd.append('cv_path', cvPath);
+  fd.append('force', document.getElementById('force').checked ? 'true' : 'false');
+  try{
+    const r = await fetch('/api/generate', {method:'POST', body:fd});
+    const j = await r.json();
+    poll(j.job_id);
+  }catch(e){
+    document.getElementById('jobMsg').textContent = 'Failed to start: ' + e;
+    go.disabled = false;
+  }
+}
+
+function badge(s){
+  const m = {queued:'b-queued',running:'b-running',done:'b-done',failed:'b-failed'};
+  return '<span class="badge '+(m[s]||'b-queued')+'">'+s+'</span>';
+}
+
+function render(job){
+  const running = job.status==='running'||job.status==='queued';
+  document.getElementById('jobMsg').innerHTML =
+      (running ? '<span class="spin"></span>' : '') + (job.message || job.status);
+  const pf = document.getElementById('preflight');
+  if(job.preflight && job.preflight.length){
+    pf.style.display='block'; pf.textContent = job.preflight.join('\n');
+  } else { pf.style.display='none'; }
+
+  const list = document.getElementById('topicList');
+  list.innerHTML = (job.topics||[]).map(t => {
+    let html = '<div class="topic"><div class="thead"><span class="ttitle">'+
+      escapeHtml(t.title)+'</span>'+badge(t.status)+'</div>';
+    const bits = [];
+    if(t.evidence!=null) bits.push(t.evidence+' evidence');
+    if(t.cited!=null) bits.push(t.cited+' cited');
+    if(t.audit && Object.keys(t.audit).length)
+      bits.push('audit: '+Object.entries(t.audit).map(([k,v])=>k+' '+v).join(', '));
+    if(bits.length) html += '<div class="meta">'+bits.join(' · ')+'</div>';
+    (t.warnings||[]).forEach(w => html += '<div class="warn">⚠ '+escapeHtml(w)+'</div>');
+    if(t.error) html += '<div class="err">✖ '+escapeHtml(t.error)+'</div>';
+    if(t.docx) html += '<a class="dl" href="/api/download/'+job.id+'/'+t.id+'/docx">⬇ DOCX</a>';
+    if(t.pdf)  html += '<a class="dl pdf" href="/api/download/'+job.id+'/'+t.id+'/pdf">⬇ PDF</a>';
+    return html + '</div>';
+  }).join('');
+}
+
+function poll(id){
+  const tick = async () => {
+    try{
+      const r = await fetch('/api/status/'+id);
+      if(!r.ok) throw new Error('status '+r.status);
+      const job = await r.json();
+      render(job);
+      if(job.status==='done' || job.status==='error'){
+        clearInterval(polling); polling=null;
+        document.getElementById('goBtn').disabled = false;
+      }
+    }catch(e){ /* keep polling briefly; server may be busy */ }
+  };
+  tick();
+  polling = setInterval(tick, 1500);
+}
+
+async function stopApp(){
+  if(!confirm('Stop the local Proposal Engine app?')) return;
+  try{ await fetch('/api/stop', {method:'POST'}); }catch(e){}
+  document.body.innerHTML =
+    '<div style="max-width:520px;margin:80px auto;text-align:center;'+
+    'font:16px Segoe UI,Arial;color:#1f2733">'+
+    '<h1 style="color:#04365b">Local app stopped</h1>'+
+    '<p>You can close this browser tab.</p></div>';
+}
+
+function escapeHtml(s){
+  return (s==null?'':String(s)).replace(/[&<>"']/g, c =>
+    ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+</script>
+</body>
+</html>

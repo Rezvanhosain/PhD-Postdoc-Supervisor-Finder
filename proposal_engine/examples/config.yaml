@@ -1,0 +1,33 @@
+# Example config.yaml for the Phase 0 proposal engine.
+model_provider: openai             # anthropic | openai | openai-compatible
+model_name: gpt-4o-mini
+proposal_type: PhD Research Proposal
+discipline: Computer Science
+target_country: HU                 # or use target_university
+length: standard
+citation_style: apa
+project_duration: 48 months
+evidence_minimum: 12
+renderer: rich_docx                 # rich_docx (default, template-matching) | pandoc
+
+# Optional first-page proposal metadata. Any field left unset is omitted cleanly
+# from the document (never a placeholder). proposal_title, if unset, falls back
+# to the model-drafted title for each topic.
+#
+# IMPORTANT: leave applicant_name / proposal_title UNSET here. The default config
+# must never carry a demo candidate name or a demo proposal title (those would be
+# stamped onto every proposal regardless of the CV or topic). Set them only in a
+# per-run config the user supplies for a specific applicant.
+# applicant_name:                  # left unset -> omitted (never a sample name)
+proposed_programme: PhD in Computer Science
+# target_supervisor:               # left unset -> omitted (do not fabricate)
+# university:                      # left unset -> omitted
+# proposal_date:                   # left unset -> omitted
+
+# Optional overrides:
+# model_base_url: https://api.openai.com/v1   # for openai-compatible gateways
+# per_query_results: 25
+# max_broaden_attempts: 1
+# sections:                        # omit to use the built-in 20-section default
+#   - {key: title, name: Title, words: 12}
+#   - {key: abstract, name: Abstract, words: 180}
