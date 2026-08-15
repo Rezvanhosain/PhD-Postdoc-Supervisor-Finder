@@ -33,6 +33,29 @@ class DraftingFailed(RuntimeError):
         super().__init__(f"drafting_validation_failed at '{section_key}': {errors}")
 
 
+# Prefixes of the two validation errors that specifically indicate a *citation*
+# problem (a hallucinated key, or a required section with no [@key]). Distinct
+# from length, placeholder, resource-claim, or topic-fidelity contamination
+# errors. Used only to decide whether a whole-topic redraft is worth one more
+# attempt before failing closed — this does NOT change what validate_section
+# rejects; citation validation is unchanged.
+_CITATION_ERROR_PREFIXES = (
+    "citation keys not in evidence_store",
+    "no in-text citations",
+)
+
+
+def is_citation_failure(exc: "DraftingFailed") -> bool:
+    """True iff a drafting failure is caused ONLY by citation-validation errors
+    (every recorded error is a citation problem). Any non-citation error
+    (word floor, placeholders, resource claims, candidate-direction contamination)
+    returns False so the pipeline still fails closed immediately."""
+    errs = getattr(exc, "errors", None) or []
+    if not errs:
+        return False
+    return all(any(e.startswith(p) for p in _CITATION_ERROR_PREFIXES) for e in errs)
+
+
 SYSTEM = (
     "You are an expert academic writing a section of a formal research proposal. "
     "Write complete, publication-quality prose — never an outline, never bullet "
