@@ -1,0 +1,22 @@
+Dr. Jordan Rivera
+Early-career environmental scientist
+
+Education
+- MSc Environmental Science, University of Example (2021)
+- BSc Marine Biology, Coastal University (2019)
+
+Research interests
+- Microplastic pollution in coastal and estuarine systems
+- Sediment geochemistry and contaminant transport
+- Ecotoxicological assessment of emerging pollutants
+
+Selected experience
+- Research assistant on an estuarine monitoring programme (2021-2023),
+  responsible for sediment sampling, sample preparation, and data analysis.
+- Proficient in R and Python for environmental data analysis.
+- Field experience with sediment coring and grain-size analysis.
+
+Skills
+- Analytical chemistry sample preparation
+- Statistical analysis (R, Python)
+- Scientific writing and peer review

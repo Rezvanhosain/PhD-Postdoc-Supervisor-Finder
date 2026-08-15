@@ -15,3 +15,18 @@ google-auth-oauthlib>=1.2
 google-auth>=2.29
 msal>=1.28
 pytest>=8
+
+# --- proposal_engine (Phase 0) ---
+typer>=0.12
+pydantic>=2.6
+PyYAML>=6.0
+pypdf>=4.0
+# Optional PDF fallback on Windows (Word COM); render also supports LibreOffice.
+docx2pdf>=0.1.8; platform_system == "Windows"
+# Optional, more robust PDF text extraction for CV intake.
+PyMuPDF>=1.24
+
+# --- desktop_app (local browser UI / launcher; usability layer only) ---
+fastapi>=0.110
+uvicorn>=0.29
+python-multipart>=0.0.9

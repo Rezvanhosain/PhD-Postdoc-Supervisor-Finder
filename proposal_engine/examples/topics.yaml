@@ -1,0 +1,23 @@
+# Example topics.yaml — one entry per proposal to generate.
+topics:
+  - id: microplastics-estuary
+    title: Microplastic accumulation and toxicity in temperate estuarine sediments
+    description: >
+      Focus on sources, transport, and ecotoxicological impact of microplastics
+      in estuarine sediment, with implications for coastal management.
+    keywords: [microplastics, estuarine sediment, ecotoxicology, coastal management]
+    # client: path/to/candidate_cv.pdf   # optional per-topic profile override
+
+  - id: federated-health-ai
+    title: Privacy-preserving federated learning for clinical decision support
+    description: >
+      Federated learning across hospitals to train diagnostic models without
+      centralizing patient data.
+    keywords: [federated learning, differential privacy, clinical decision support]
+
+  - id: ai-governance-digital-identity
+    title: AI governance in public-sector digital identity systems
+    description: >
+      Governance, accountability, and risk controls for AI used in government
+      digital identity and public-service eligibility decisions.
+    keywords: [AI governance, digital identity, public sector, algorithmic accountability]
