@@ -38,10 +38,12 @@ ARTIFACTS = {
     "run_log": "run_log.json",
 }
 
-# A citation-only drafting failure (a hallucinated key or a missing required
-# [@key]) is usually just LLM variance. Redraft the whole topic up to this many
-# times before failing closed. Non-citation failures never retry here.
-CITATION_REDRAFT_RETRIES = 2
+# A transient drafting failure (a citation-only miss, or a malformed/truncated
+# JSON draw) is usually just LLM variance. Redraft the whole topic up to this
+# many times before failing closed. Substantive validation failures never retry.
+DRAFT_REDRAFT_RETRIES = 2
+# Back-compat alias (retained for callers/tests that referenced the old name).
+CITATION_REDRAFT_RETRIES = DRAFT_REDRAFT_RETRIES
 
 
 @dataclass
@@ -181,20 +183,21 @@ def run_topic(topic: Topic, config: EngineConfig, workspace: Path, *,
     draft_path = _p(workspace, "draft")
     if not log.can_skip("draft", [draft_path], force):
         sections = None
-        for attempt in range(CITATION_REDRAFT_RETRIES + 1):
+        for attempt in range(DRAFT_REDRAFT_RETRIES + 1):
             try:
                 sections = drafting.draft_proposal(llm, topic, config, cleaned_context,
                                                    evidence, forbidden_terms=forbidden_terms)
                 break
             except drafting.DraftingFailed as e:
-                # Redraft the whole topic on a citation-ONLY failure (LLM variance);
-                # fail closed immediately on any other validation error, and fail
-                # closed once the citation retries are exhausted. Validation itself
-                # is unchanged — only the retry policy consults is_citation_failure.
-                if drafting.is_citation_failure(e) and attempt < CITATION_REDRAFT_RETRIES:
+                # Redraft the whole topic on a transient failure (a citation-only
+                # miss, or a malformed/truncated JSON draw); fail closed immediately
+                # on any substantive validation error, and fail closed once the
+                # retries are exhausted. Validation itself is unchanged — only the
+                # retry policy consults is_retryable_draft_failure.
+                if drafting.is_retryable_draft_failure(e) and attempt < DRAFT_REDRAFT_RETRIES:
                     log.mark("draft", "RETRY",
-                             f"citation-validation redraft {attempt + 1}/"
-                             f"{CITATION_REDRAFT_RETRIES} after '{e.section_key}': {e.errors}")
+                             f"transient-draft redraft {attempt + 1}/"
+                             f"{DRAFT_REDRAFT_RETRIES} after '{e.section_key}': {e.errors}")
                     continue
                 log.mark_failed("draft", str(e))
                 result.status, result.failure = "FAILED", str(e)

@@ -56,6 +56,29 @@ def is_citation_failure(exc: "DraftingFailed") -> bool:
     return all(any(e.startswith(p) for p in _CITATION_ERROR_PREFIXES) for e in errs)
 
 
+# Transient model-output errors: a malformed/truncated JSON draw (or any other
+# LLMError surfaced while drafting a section, which draft_section records as
+# "invalid JSON output: ..."). Like a citation-only miss, these are worth one
+# more whole-topic draw rather than an immediate fail.
+_TRANSIENT_ERROR_PREFIXES = (
+    "invalid JSON output",
+)
+
+
+def is_retryable_draft_failure(exc: "DraftingFailed") -> bool:
+    """True iff EVERY recorded error is a retryable transient — a citation-only
+    miss or a transient model-output error (malformed/truncated JSON, LLMError).
+    Substantive validation failures (word floor, placeholders, unlabelled
+    resource claims, candidate-direction contamination) return False so the
+    pipeline fails closed. This never loosens validation; it only decides whether
+    one more bounded redraft is attempted before the topic is marked failed."""
+    errs = getattr(exc, "errors", None) or []
+    if not errs:
+        return False
+    retryable = _CITATION_ERROR_PREFIXES + _TRANSIENT_ERROR_PREFIXES
+    return all(any(e.startswith(p) for p in retryable) for e in errs)
+
+
 SYSTEM = (
     "You are an expert academic writing a section of a formal research proposal. "
     "Write complete, publication-quality prose — never an outline, never bullet "
