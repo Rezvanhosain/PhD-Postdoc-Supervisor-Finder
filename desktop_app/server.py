@@ -56,6 +56,16 @@ async def upload_cv(file: UploadFile = File(...)) -> JSONResponse:
     return JSONResponse({"path": str(dest.resolve()), "name": safe_name})
 
 
+@app.post("/api/precheck")
+async def precheck(
+    cv_path: str = Form(""),
+    applicant_name: str = Form(""),
+) -> JSONResponse:
+    """Evaluate the profile-review gate for an uploaded CV without generating, so
+    the UI can show what was flagged and offer the user a choice."""
+    return JSONResponse(jobs.precheck_profile(cv_path or None, applicant_name or None))
+
+
 @app.post("/api/generate")
 async def generate(
     topics: str = Form(...),
@@ -63,10 +73,13 @@ async def generate(
     out_dir: str = Form(""),
     cv_path: str = Form(""),
     force: bool = Form(True),
+    profile_mode: str = Form("auto"),
+    applicant_name: str = Form(""),
 ) -> JSONResponse:
     job_id = jobs.start_job(topics_raw=topics, config_path=config_path or None,
                             out_dir=out_dir or None, cv_path=cv_path or None,
-                            force=force)
+                            force=force, profile_mode=profile_mode or "auto",
+                            applicant_name=applicant_name or None)
     return JSONResponse({"job_id": job_id})
 
 

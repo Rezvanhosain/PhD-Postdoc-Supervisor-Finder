@@ -14,6 +14,7 @@ from . import candidate_context as cc
 from . import draft as drafting
 from . import evidence as ev
 from . import intake as intake_mod
+from . import profile_gate as pg
 from . import review as review_mod
 from . import strategy as strat_mod
 from .config import EngineConfig
@@ -53,6 +54,8 @@ class TopicResult:
     workspace: str = ""
     failure: str | None = None
     notes: list[str] = field(default_factory=list)
+    personalization: str = ""              # full | safe_facts | none | "" (n/a)
+    profile_gate: dict = field(default_factory=dict)  # structured gate for the UI
 
 
 def _p(workspace: Path, name_key: str) -> Path:
@@ -73,7 +76,8 @@ def _quality_serious(docx_path: Path, config: EngineConfig, result: "TopicResult
 def run_topic(topic: Topic, config: EngineConfig, workspace: Path, *,
               provider, llm, verify_doi, profile_path: str | None = None,
               force: bool = False, evidence_only: bool = False,
-              preflight: dict | None = None) -> TopicResult:
+              preflight: dict | None = None, profile_mode: str = "auto",
+              applicant_name: str | None = None) -> TopicResult:
     workspace.mkdir(parents=True, exist_ok=True)
     log = RunLog(_p(workspace, "run_log"), topic.id)
     if preflight is not None:
@@ -92,6 +96,7 @@ def run_topic(topic: Topic, config: EngineConfig, workspace: Path, *,
             "config": config.model_dump(),
             "client_profile_path": client or None,
         }
+        gate = pg.ProfileGate(default_mode=pg.NONE)  # no client => nothing to personalize
         if client:
             pr = intake_mod.extract_profile(client)
             intake_mod.write_profile_md(pr, profile_out)
@@ -100,6 +105,11 @@ def run_topic(topic: Topic, config: EngineConfig, workspace: Path, *,
             manifest["profile_reasons"] = pr.reasons
             if not pr.ok:
                 manifest["profile_status"] = "NEEDS_PROFILE_REVIEW"
+            gate = pg.evaluate_profile_gate(
+                reasons=pr.reasons, profile_text=pr.text,
+                applicant_name=applicant_name, profile_provided=True,
+                source_name=Path(pr.source or str(client)).name)
+        manifest["profile_gate"] = gate.to_dict()
         manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False),
                                  encoding="utf-8")
         log.mark_success("intake", f"client={client or 'none'}")
@@ -107,11 +117,14 @@ def run_topic(topic: Topic, config: EngineConfig, workspace: Path, *,
         if profile_out.exists():
             profile_text = intake_mod.extract_profile(profile_out).text
 
-    # Block drafting on poor profile
-    profile_needs_review = False
+    # Structured profile-review gate (never a vague block). Recover from the
+    # manifest so a resumed run reuses the same decision.
+    gate = pg.ProfileGate(default_mode=pg.NONE)
     if manifest_path.exists():
         m = json.loads(manifest_path.read_text(encoding="utf-8"))
-        profile_needs_review = m.get("profile_status") == "NEEDS_PROFILE_REVIEW"
+        if m.get("profile_gate"):
+            gate = pg.ProfileGate.from_dict(m["profile_gate"])
+    result.profile_gate = gate.to_dict()
 
     # ---- Stage 2: Search Strategy -------------------------------------
     strat_path = _p(workspace, "strategy")
@@ -164,19 +177,39 @@ def run_topic(topic: Topic, config: EngineConfig, workspace: Path, *,
                             "(evidence-only mode / no model key).")
         return result
 
-    if profile_needs_review:
-        log.mark_failed("draft", "blocked: NEEDS_PROFILE_REVIEW")
-        result.status, result.failure = "FAILED", "NEEDS_PROFILE_REVIEW blocks drafting"
+    # ---- Profile-review gate: decide HOW (or whether) the CV personalizes the
+    # proposal. A poor/uncertain profile no longer silently blocks drafting: it
+    # picks a safe personalization mode, or hard-blocks ONLY for true critical
+    # errors (unreadable/corrupt file, identity conflict). The reason is
+    # structured (see result.profile_gate) so the UI can explain it exactly. ----
+    mode, block_detail = pg.resolve_personalization(gate, profile_mode)
+    if mode in (pg.BLOCK, pg.STOP):
+        log.mark_failed("draft", block_detail, profile_gate=gate.to_dict())
+        log.set_personalization(pg.NONE, gate.to_dict())
+        result.status, result.failure = "FAILED", block_detail
+        result.personalization = pg.NONE
         return result
 
-    # ---- CV de-contamination: draft from cleaned candidate facts only, and
-    # collect the candidate's own proposed-direction terms to keep them out. ----
+    result.personalization = mode
+    log.set_personalization(mode, gate.to_dict())
+
+    # ---- CV de-contamination: draft only from the profile text this mode
+    # permits (full = cleaned facts, safe_facts = low-risk subset, none = no
+    # profile at all), and always keep the candidate's proposed-direction terms
+    # out. The topic-fidelity gate stays fully active regardless of mode. ----
     topic_text = f"{topic.title} {topic.description}"
-    cleaned_context = cc.clean_candidate_context(profile_text) if profile_text else ""
+    if mode == pg.FULL:
+        draft_context = cc.clean_candidate_context(profile_text) if profile_text else ""
+    elif mode == pg.SAFE_FACTS:
+        draft_context = pg.safe_profile_facts(profile_text) if profile_text else ""
+    else:  # pg.NONE — generate without candidate personalization
+        draft_context = ""
+    # Forbidden terms are always derived from the RAW profile so contamination is
+    # caught even in safe_facts/none mode; this never weakens topic fidelity.
     forbidden_terms = cc.direction_terms(profile_text, topic_text) if profile_text else []
     ev_blob = cc.evidence_blob(evidence)
     if profile_text:
-        cc.write_candidate_context(cleaned_context, forbidden_terms,
+        cc.write_candidate_context(draft_context, forbidden_terms,
                                    workspace / "candidate_context.md")
 
     # ---- Stage 4: Draft ------------------------------------------------
@@ -185,7 +218,7 @@ def run_topic(topic: Topic, config: EngineConfig, workspace: Path, *,
         sections = None
         for attempt in range(DRAFT_REDRAFT_RETRIES + 1):
             try:
-                sections = drafting.draft_proposal(llm, topic, config, cleaned_context,
+                sections = drafting.draft_proposal(llm, topic, config, draft_context,
                                                    evidence, forbidden_terms=forbidden_terms)
                 break
             except drafting.DraftingFailed as e:

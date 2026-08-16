@@ -19,6 +19,8 @@ from pathlib import Path
 import yaml
 
 from proposal_engine import factory
+from proposal_engine import intake as intake_mod
+from proposal_engine import profile_gate as pg
 from proposal_engine.config import EngineConfig, load_config
 from proposal_engine.pipeline import ARTIFACTS, run_topic
 from proposal_engine.preflight import preflight_messages, run_preflight
@@ -41,6 +43,13 @@ class TopicStatus:
     audit: dict = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
     error: str | None = None
+    # Profile-review gate surfaced to the UI (never a file-only workflow).
+    personalization: str | None = None       # full | safe_facts | none
+    profile_severity: str | None = None       # ok | warning | critical
+    profile_blocking: str | None = None       # "" | data | file
+    profile_flags: list = field(default_factory=list)  # [{code,severity,message,field,consequence}]
+    profile_default_mode: str | None = None
+    profile_allow_override: bool = True
 
 
 @dataclass
@@ -139,8 +148,26 @@ def _audit_summary(audit_csv: Path) -> dict:
     return counts
 
 
+def precheck_profile(cv_path: str | None, applicant_name: str | None = None) -> dict:
+    """Extract the CV and evaluate the profile-review gate WITHOUT generating, so
+    the UI can show exactly what was flagged (field/sentence/file), whether it is a
+    warning or a critical blocker, what proceeding will do, and which choices are
+    allowed — before the user commits to generation."""
+    if not cv_path:
+        gate = pg.evaluate_profile_gate(reasons=[], profile_text="",
+                                        applicant_name=applicant_name, profile_provided=False)
+        return {"provided": False, "extracted_name": "", **gate.to_dict()}
+    pr = intake_mod.extract_profile(cv_path)
+    gate = pg.evaluate_profile_gate(
+        reasons=pr.reasons, profile_text=pr.text, applicant_name=applicant_name,
+        profile_provided=True, source_name=Path(pr.source or cv_path).name)
+    return {"provided": True, "extracted_name": pg.extracted_applicant_name(pr.text),
+            **gate.to_dict()}
+
+
 def start_job(*, topics_raw: str, config_path: str | None, out_dir: str | None,
-              cv_path: str | None, force: bool = True) -> str:
+              cv_path: str | None, force: bool = True, profile_mode: str = "auto",
+              applicant_name: str | None = None) -> str:
     """Validate input, create a Job, and launch the worker thread. Returns job id."""
     out = Path(out_dir) if out_dir else DEFAULT_OUT
     topic_dicts = parse_topic_lines(topics_raw)
@@ -155,14 +182,16 @@ def start_job(*, topics_raw: str, config_path: str | None, out_dir: str | None,
     with _LOCK:
         _JOBS[job.id] = job
     thread = threading.Thread(target=_run_job, name=f"pe-job-{job.id}",
-                              args=(job, topic_dicts, config_path, out, cv_path, force),
+                              args=(job, topic_dicts, config_path, out, cv_path, force,
+                                    profile_mode, applicant_name),
                               daemon=True)
     thread.start()
     return job.id
 
 
 def _run_job(job: Job, topic_dicts: list[dict], config_path: str | None,
-             out: Path, cv_path: str | None, force: bool) -> None:
+             out: Path, cv_path: str | None, force: bool,
+             profile_mode: str = "auto", applicant_name: str | None = None) -> None:
     try:
         out.mkdir(parents=True, exist_ok=True)
         cfg_file = resolve_config_file(config_path, out)
@@ -208,12 +237,22 @@ def _run_job(job: Job, topic_dicts: list[dict], config_path: str | None,
             try:
                 r = run_topic(t, cfg, ws, provider=provider, llm=llm,
                               verify_doi=verify_doi, profile_path=cv_path or None,
-                              force=force, evidence_only=eff_evidence_only, preflight=pre)
+                              force=force, evidence_only=eff_evidence_only, preflight=pre,
+                              profile_mode=profile_mode, applicant_name=applicant_name)
             except Exception as e:  # never let one topic abort the batch
                 ts.status = "failed"
                 ts.error = str(e)
                 continue
             ts.warnings = [n for n in r.notes if "warning" in n.lower() or "skipped" in n.lower()]
+            # Surface the profile-review gate + personalization mode on every topic
+            # so the UI can explain what was flagged and how the CV was (or wasn't) used.
+            ts.personalization = r.personalization or None
+            g = r.profile_gate or {}
+            ts.profile_severity = g.get("severity")
+            ts.profile_blocking = g.get("blocking_class")
+            ts.profile_flags = g.get("flags", [])
+            ts.profile_default_mode = g.get("default_mode")
+            ts.profile_allow_override = bool(g.get("allow_override_without_personalization", True))
             if r.failure:
                 ts.status = "failed"
                 ts.error = r.failure

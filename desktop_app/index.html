@@ -58,6 +58,21 @@
     vertical-align:-2px;margin-right:6px}
   @keyframes sp{to{transform:rotate(360deg)}}
   .foot{color:var(--muted);font-size:12px;text-align:center;padding:6px 0 26px}
+  select{width:100%;padding:9px 10px;border:1px solid var(--line);border-radius:6px;
+    font:inherit;background:#fcfdfe}
+  .flag{border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin:8px 0;
+    background:#fcfdfe}
+  .flag .fmsg{font-weight:600}
+  .flag .ffield{color:var(--muted);font-size:13px;margin-top:2px}
+  .flag .fcons{font-size:13px;margin-top:5px;color:#3a4653}
+  .chip{display:inline-block;font-size:11px;font-weight:700;padding:2px 8px;
+    border-radius:20px;margin-right:8px;vertical-align:1px}
+  .chip-warning{background:#fbf1d8;color:#8a5d00}
+  .chip-critical{background:#fbe0dd;color:#a3160f}
+  .chip-ok{background:#e3f4ea;color:var(--ok)}
+  .chip-mode{background:#e6f0fb;color:#1e63b0}
+  .blocked{background:#fdecea;border:1px solid #f3c0ba;color:#7c1810;border-radius:8px;
+    padding:10px 12px;margin:8px 0;font-size:13px}
 </style>
 </head>
 <body>
@@ -74,6 +89,9 @@
       <label class="fbtn">Choose file…<input id="cvFile" type="file" hidden onchange="uploadCv()"></label>
       <span id="cvName" class="hint">No file selected</span>
     </div>
+
+    <label>Applicant name <span class="hint">(optional — checked against the CV to catch a wrong file)</span></label>
+    <input id="applicant" type="text" placeholder="e.g. Arsalan Javed" onchange="runPrecheck()">
 
     <label>Research topics <span class="hint">— one per line. Optional <code>id | Title</code>.</span></label>
     <textarea id="topics" placeholder="Privacy-preserving federated learning for clinical decision support
@@ -94,6 +112,21 @@ AI governance in public-sector digital identity systems"></textarea>
     <button id="goBtn" class="primary" onclick="generate()">Generate Proposals</button>
   </div>
 
+  <div class="card" id="profileCard" style="display:none">
+    <h2>Profile review</h2>
+    <p class="msg" id="profileSummary"></p>
+    <div id="profileFlags"></div>
+    <div id="profileBlocked" class="blocked" style="display:none"></div>
+    <label for="profileMode">How should the candidate profile be used?</label>
+    <select id="profileMode" onchange="onModeChange()">
+      <option value="auto">Recommended (safe automatic default)</option>
+      <option value="safe_facts">Proceed with safe profile facts (education, skills, employment)</option>
+      <option value="none">Proceed without candidate personalization</option>
+      <option value="stop">Stop and review profile</option>
+    </select>
+    <div id="profileConsequence" class="hint" style="margin-top:8px"></div>
+  </div>
+
   <div class="card" id="statusCard" style="display:none">
     <h2>2 · Progress</h2>
     <p class="msg" id="jobMsg"><span class="spin"></span>Starting…</p>
@@ -106,6 +139,10 @@ AI governance in public-sector digital identity systems"></textarea>
 <script>
 let cvPath = "";
 let polling = null;
+let gate = null;   // last profile-review gate from /api/precheck
+
+const MODE_LABEL = {full:'fully personalized', safe_facts:'safe profile facts only',
+                    none:'no candidate personalization'};
 
 async function uploadCv(){
   const f = document.getElementById('cvFile').files[0];
@@ -116,7 +153,108 @@ async function uploadCv(){
     const r = await fetch('/api/upload', {method:'POST', body:fd});
     const j = await r.json(); cvPath = j.path;
     document.getElementById('cvName').textContent = j.name + "  ✓";
+    await runPrecheck();
   }catch(e){ document.getElementById('cvName').textContent = "Upload failed"; }
+}
+
+// Evaluate the profile-review gate (no generation) and render the panel so the
+// user sees exactly what was flagged and chooses how to proceed.
+async function runPrecheck(){
+  if(!cvPath){ document.getElementById('profileCard').style.display='none'; return; }
+  const fd = new FormData();
+  fd.append('cv_path', cvPath);
+  fd.append('applicant_name', document.getElementById('applicant').value.trim());
+  try{
+    const r = await fetch('/api/precheck', {method:'POST', body:fd});
+    gate = await r.json();
+    renderProfilePanel();
+  }catch(e){ /* precheck is advisory; generation re-checks server-side */ }
+}
+
+function sevChip(sev){
+  const c = sev==='critical'?'chip-critical':(sev==='warning'?'chip-warning':'chip-ok');
+  return '<span class="chip '+c+'">'+escapeHtml(sev)+'</span>';
+}
+
+function renderProfilePanel(){
+  const card = document.getElementById('profileCard');
+  if(!gate || !gate.provided){ card.style.display='none'; return; }
+  card.style.display='block';
+  const flags = gate.flags || [];
+  const sev = gate.severity || 'ok';
+  document.getElementById('profileSummary').innerHTML =
+    sevChip(sev) + (sev==='ok'
+      ? 'Profile looks good — it will fully personalize the proposal.'
+      : (sev==='critical'
+          ? 'A critical problem was found with the profile.'
+          : 'The profile was flagged. Choose how to proceed.'));
+
+  document.getElementById('profileFlags').innerHTML = flags.map(f =>
+    '<div class="flag">'+sevChip(f.severity)+
+      '<span class="fmsg">'+escapeHtml(f.message)+'</span>'+
+      '<div class="ffield">Flagged: '+escapeHtml(f.field)+'</div>'+
+      '<div class="fcons">If you proceed: '+escapeHtml(f.consequence)+'</div>'+
+    '</div>').join('');
+
+  // Default the choice to the safe recommendation, and align the mode control.
+  const sel = document.getElementById('profileMode');
+  const fileBlocked = gate.blocking_class === 'file';
+  const dataBlocked = gate.blocking_class === 'data';
+  const blk = document.getElementById('profileBlocked');
+  if(fileBlocked){
+    blk.style.display='block';
+    blk.textContent = 'Blocked: the uploaded file is unreadable or corrupt, so it '
+      + 'cannot be used. Remove the file or upload a readable CV to continue. '
+      + '(This block cannot be overridden.)';
+    sel.disabled = true;
+  } else if(dataBlocked){
+    blk.style.display='block';
+    blk.textContent = 'Blocked: identity conflict. To continue, choose '
+      + '"Proceed without candidate personalization".';
+    sel.disabled = false;
+    sel.value = 'none';
+  } else {
+    blk.style.display='none';
+    sel.disabled = false;
+    // recommended default = the gate's safe default (map to the select values)
+    sel.value = (sev==='ok') ? 'auto' : 'auto';
+  }
+  onModeChange();
+  updateGenerateEnabled();
+}
+
+function effectiveMode(){
+  // Mirror the server's resolution for the consequence hint.
+  const sel = document.getElementById('profileMode').value;
+  if(!gate || !gate.provided) return 'none';
+  if(gate.blocking_class==='file') return 'blocked';
+  if(sel==='stop') return 'stop';
+  if(gate.blocking_class==='data') return sel==='none' ? 'none' : 'blocked';
+  if(sel==='auto') return gate.default_mode;
+  return sel;
+}
+
+function onModeChange(){
+  const m = effectiveMode();
+  const el = document.getElementById('profileConsequence');
+  const map = {
+    full:'The proposal will be fully personalized from your verified CV facts.',
+    safe_facts:'The proposal will use only clearly safe facts (education, employment, skills). Uncertain or flagged claims are excluded.',
+    none:'The proposal will be generated WITHOUT any candidate personalization.',
+    stop:'Generation is paused so you can review/replace the profile. Nothing will be generated.',
+    blocked:'This selection is blocked — see the message above.'
+  };
+  el.textContent = map[m] || '';
+  updateGenerateEnabled();
+}
+
+function updateGenerateEnabled(){
+  const go = document.getElementById('goBtn');
+  const m = effectiveMode();
+  go.disabled = (m === 'blocked');
+  go.textContent = (m === 'stop') ? 'Stop selected — choose another option to generate'
+                                  : 'Generate Proposals';
+  if(m === 'stop') go.disabled = true;
 }
 
 async function generate(){
@@ -131,6 +269,8 @@ async function generate(){
   fd.append('out_dir', document.getElementById('out').value.trim());
   fd.append('cv_path', cvPath);
   fd.append('force', document.getElementById('force').checked ? 'true' : 'false');
+  fd.append('profile_mode', document.getElementById('profileMode').value);
+  fd.append('applicant_name', document.getElementById('applicant').value.trim());
   try{
     const r = await fetch('/api/generate', {method:'POST', body:fd});
     const j = await r.json();
@@ -165,6 +305,17 @@ function render(job){
     if(t.audit && Object.keys(t.audit).length)
       bits.push('audit: '+Object.entries(t.audit).map(([k,v])=>k+' '+v).join(', '));
     if(bits.length) html += '<div class="meta">'+bits.join(' · ')+'</div>';
+    // Personalization mode used for this proposal (matches run_log.json).
+    if(t.personalization)
+      html += '<div class="meta"><span class="chip chip-mode">personalization: '+
+        escapeHtml(MODE_LABEL[t.personalization]||t.personalization)+'</span></div>';
+    // Profile-review flags surfaced inline — never a file-only workflow.
+    (t.profile_flags||[]).forEach(f => {
+      html += '<div class="flag">'+sevChip(f.severity)+
+        '<span class="fmsg">'+escapeHtml(f.message)+'</span>'+
+        '<div class="ffield">Flagged: '+escapeHtml(f.field)+'</div>'+
+        '<div class="fcons">'+escapeHtml(f.consequence)+'</div></div>';
+    });
     (t.warnings||[]).forEach(w => html += '<div class="warn">⚠ '+escapeHtml(w)+'</div>');
     if(t.error) html += '<div class="err">✖ '+escapeHtml(t.error)+'</div>';
     if(t.docx) html += '<a class="dl" href="/api/download/'+job.id+'/'+t.id+'/docx">⬇ DOCX</a>';
