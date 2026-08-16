@@ -1,0 +1,15 @@
+# Minimal pytest configuration — CI import-path fix only.
+#
+# The test suite imports the in-repo packages (`app`, `proposal_engine`,
+# `desktop_app`) directly, without an editable install. GitHub Actions runs the
+# bare `pytest` console script which — unlike a local `python -m pytest` — does
+# NOT put the repo root on sys.path. Collection therefore failed at
+# `tests/conftest.py` with `ModuleNotFoundError: No module named 'app'`, turning
+# every CI run red regardless of the actual test outcomes.
+#
+# `pythonpath = ["."]` puts the repo root on sys.path for every pytest
+# invocation, so the in-repo packages import the same way in CI as they do
+# locally. This changes no test and no package code — it only fixes discovery.
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
