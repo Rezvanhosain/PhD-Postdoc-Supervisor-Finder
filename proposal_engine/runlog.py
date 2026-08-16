@@ -77,6 +77,13 @@ class RunLog:
         self.data["status"] = status
         self.save()
 
+    def set_personalization(self, mode: str, gate: dict | None = None) -> None:
+        """Record how the proposal was personalized (full / safe_facts / none)
+        and the structured profile-review gate, so the mode and the exact
+        warning details are visible without opening other artifacts."""
+        self.data["personalization"] = {"mode": mode, "gate": gate or {}}
+        self.save()
+
     def approve(self) -> None:
         self.data["approved"] = True
         self.data["status"] = "FINAL"
